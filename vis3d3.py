@@ -516,6 +516,7 @@ def spread_at_z(z, rays, metric='rms', center='median', **kwargs):
 
 def find_focus(rays, radius, num_samples=20, metric='rms', plot=False, quick_focus=False, method='grid', center='median', **kwargs):
     for ray in rays:
+        print('ray',ray,ray.ps)
         if abs(ray.ps[1,0]-radius*0.8)<radius*0.1:
             ray1=ray
             break
@@ -635,10 +636,10 @@ lens3 = LensElement(R1=444, R2=-926, thickness=11, aperture=65, n_lens=1.43985, 
 lens_system = LensSystem([lens1, lens2, lens3])
 
 # Generate rays
-x0=1e6
-y0=0.4e6
+x0=0e6
+y0=0.e6
 z0=-1e8
-num_rays=5000
+num_rays=500
 rays = ray_gen(x0=x0, y0=y0, z0=z0, num_rays=num_rays, R1=1750.669, z1=0, aperture=68,random=False)
 
 # Trace rays through the lens system
