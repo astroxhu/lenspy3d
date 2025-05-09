@@ -17,13 +17,14 @@ FRAUNHOFER_WAVELENGTHS = {
 
 FRAUNHOFER_COLORS = {
     'h': (96, 0, 255),      # violet
-    'g': (60, 80, 255),     # deep blue
+    #'g': (60, 80, 255),     # deep blue
+    'g': (80, 0, 255),     # violet
     "F'": (65, 100, 255),   # blue
-    'F': (80, 120, 255),    # cyan-blue
-    'e': (0, 255, 0),       # green
-    'd': (255, 210, 0),     # golden yellow
-    'D': (255, 200, 0),     # yellow
-    "C'": (255, 0, 0),      # red
+    'F': (80, 220, 255),    # cyan-blue
+    'e': (0, 255, 40),       # green
+    'd': (240, 160, 80),     # golden yellow
+    'D': (255, 180, 0),     # yellow
+    "C'": (255, 0, 20),      # red
     'C': (255, 0, 0),       # red
     'r': (128, 0, 0),       # deep red (near IR)
 }
@@ -197,7 +198,7 @@ class SphericalSurface:
                 A1, A2, A3 = row['a1'], row['a2'], row['a3']
                 B1, B2, B3 = row['b1'], row['b2'], row['b3']
                 #print(glass_name, 'A Bs',A1,A2,A3,B1,B2,B3)
-                n2 = 1 + (A1 * λ2 / (λ2 - B1**2)) + (A2 * λ2 / (λ2 - B2**2)) + (A3 * λ2 / (λ2 - B3**2))
+                n2 = 1 + (A1 * λ2 / (λ2 - B1)) + (A2 * λ2 / (λ2 - B2)) + (A3 * λ2 / (λ2 - B3))
                 return np.sqrt(n2)
             return default_n  # fallback
 
