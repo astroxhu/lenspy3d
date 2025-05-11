@@ -1,6 +1,67 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+
+clist0 = [
+    "#0ADCF9", #(  7, 222, 243), #cyan
+    "#7DDE36", #(124, 223,  57), #green
+    "#FE5B59", #(253,  90,  88), #orange-red
+    "#FBF258", #(251, 241,  81), #gold-yellow
+    "#A46DED", #(168, 103, 252), #purple
+    "#56A1EB", #( 81, 160, 252), #blue
+    ]
+
+def draw_scale(ax, start, end, position=0, orientation='horizontal',
+               tick_height=3, label_offset=0.05, fontsize=8, color='w'):
+    """
+    Draw a linear scale with ticks on a given axis.
+
+    Parameters:
+        ax          : matplotlib axis to draw on
+        start       : start coordinate along the scale axis
+        end         : end coordinate along the scale axis
+        position    : constant coordinate orthogonal to the scale (e.g., y if horizontal)
+        orientation : 'horizontal' or 'vertical'
+        tick_height : length of tick marks
+        label_offset: offset of tick labels from the ticks
+        fontsize    : size of tick label font
+        color       : color of the scale line, ticks, and labels
+    """
+    total_length = abs(end - start)
+    axis_min = min(start, end)
+    axis_max = max(start, end)
+
+    # Decide tick step size
+    if total_length > 400:
+        tick_step = 100
+    elif total_length > 150:
+        tick_step = 50
+    elif total_length > 80:
+        tick_step = 20
+    elif total_length > 30:
+        tick_step = 10
+    else:
+        tick_step = 5
+
+    ticks = np.arange(np.ceil(axis_min / tick_step) * tick_step,
+                      axis_max + 1, tick_step)
+
+    # Draw scale line and ticks
+    if orientation == 'horizontal':
+        ax.plot([start, end], [position, position], color=color, lw=1)
+        for t in ticks:
+            ax.plot([t, t], [position - tick_height/2, position + tick_height/2], color=color, lw=1)
+            ax.text(t, position - tick_height/2 - label_offset, f"{t:.0f}",
+                    ha='center', va='top', fontsize=fontsize, color=color)
+    elif orientation == 'vertical':
+        ax.plot([position, position], [start, end], color=color, lw=1)
+        for t in ticks:
+            ax.plot([position - tick_height/2, position + tick_height/2], [t, t], color=color, lw=1)
+            ax.text(position - tick_height/2 - label_offset, t, f"{t:.0f}",
+                    ha='right', va='center', fontsize=fontsize, color=color)
+    else:
+        raise ValueError("orientation must be 'horizontal' or 'vertical'")
+
 def get_centered_ticks(start, end, spacing):
     # Shift range so it starts at the nearest multiple of spacing below or equal to start
     first_tick = np.floor(start / spacing) * spacing

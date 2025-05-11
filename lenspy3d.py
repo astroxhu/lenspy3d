@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 from getglass import *
+from plottools import *
 
 FRAUNHOFER_WAVELENGTHS = {
     'h': 404.7,
@@ -458,9 +459,11 @@ class SurfaceSystem:
             rays = updated_rays
         return rays
 
-    def draw_lens(self, ax=None,color='k',lw=0.8, diaphragm_size=8):
+    def draw_lens(self, ax=None,axcolor='k',color='w',lw=0.8, diaphragm_size=8, z_focus=None, r_focus=22):
         if ax is None:
             fig, ax = plt.subplots(figsize=(10, 5))
+
+        ax.set_facecolor(axcolor)
 
         ax.set_aspect('equal')
         ax.set_xlabel('Optical axis (z)')
@@ -484,7 +487,7 @@ class SurfaceSystem:
             if is_diaphragm:
                 ax.plot([z, z], [rad, rad+diaphragm_size], color, linewidth=lw)
                 ax.plot([z, z], [-diaphragm_size-rad, -rad], color, linewidth=lw)
-                ax.text(z, -rad - diaphragm_size*2, 'Diaphragm', ha='center', fontsize=10, va='top')
+                ax.text(z, -rad - diaphragm_size*2, 'Diaphragm', ha='center', fontsize=10, va='top',color=color)
                 continue
 
             # Draw curved or flat surface
@@ -519,9 +522,12 @@ class SurfaceSystem:
 
 
             # Draw lens body edge if next surface is part of same lens
+        if z_focus:
+            ax.plot([z_focus, z_focus], [-r_focus, r_focus], color, lw=lw)
+            draw_scale(ax,start=0,end=z_focus, position = -y_max*1.1, color=color)
 
         ax.set_title("Lens System Layout")
-        ax.grid(True)
+        #ax.grid(True)
         return ax
 
 def ray_gen(x0=0, y0=0, z0=-1e10, num_rays=50, R1=1.0, z1=0.0, aperture=10.0, random=True,n0=n_air0):
@@ -554,8 +560,12 @@ def ray_gen(x0=0, y0=0, z0=-1e10, num_rays=50, R1=1.0, z1=0.0, aperture=10.0, ra
                 rays.append(ray)
     return rays
 
-def ray_gen2d(system, ax=None, z0=-1e8,num_rays=100,y_targets=[0,4,8,12,17,22],
-    clist=['C0','C1','C2','C3','C4','C5']):
+
+
+def ray_gen2d(system, ax=None, z0=-1e9,num_rays=100,y_targets=[0,4,8,12,17,22],
+    #clist=['C0','C1','C2','C3','C4','C5'],
+    clist=clist0,
+    lw=1):
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -570,7 +580,7 @@ def ray_gen2d(system, ax=None, z0=-1e8,num_rays=100,y_targets=[0,4,8,12,17,22],
     rays_center = system.trace(rays)
     z_focus = find_focus(rays_center, radius=rad0, plot=False, quick_focus=False)
     
-    y0_candidates = np.linspace(0, -1.1*z0/z_focus*y_targets[-1], 50)  # mm
+    y0_candidates = np.linspace(0, 1.1*z0/z_focus*y_targets[-1], 50)  # mm
     r_targets = abs(np.array(y_targets))
     matched_y0s = []
 
@@ -650,7 +660,7 @@ def ray_gen2d(system, ax=None, z0=-1e8,num_rays=100,y_targets=[0,4,8,12,17,22],
         ray3 = Ray3D((x0, y0, z0), (dx, dy, dz),n0=n_air0,color=clist[i])
         demo_rays.append(ray3)
 
-    system.add_surface(R=np.inf, z0=z_focus, diam = 2*abs(y_targets[-1])+0.1)
+    system.add_surface(R=np.inf, z0=z_focus, diam = 2*abs(y_targets[-1])+0.1, n_out=100)
     print('TRACE DEMO')
     system.trace(demo_rays)
 
@@ -658,9 +668,9 @@ def ray_gen2d(system, ax=None, z0=-1e8,num_rays=100,y_targets=[0,4,8,12,17,22],
         print('demo',ray.ps[-1],ray.ps[1])
         path = np.array(ray.ps)
         if not np.isnan(ray.current_point()[2]) or True:
-            ax.plot(path[1:, 2], path[1:, 1], color=ray.color, alpha=1,lw=0.5)
+            ax.plot(path[1:, 2], path[1:, 1], color=ray.color, alpha=1,lw=lw)
 
-    return ax
+    return ax, z_focus
 
 
 
