@@ -96,9 +96,9 @@ def analyze_mtf_across_field(
     results,
     wls,
     weights,
-    airy_radius_by_wl,
     x, y,
     pixel,
+    airy_radius_by_wl=None,
     freq_samples=[10, 20, 40, 80, 160],
     convolver_fn=convolve_dots,
     clist=clist0,
@@ -107,8 +107,6 @@ def analyze_mtf_across_field(
     tick_color='white',
     font_color='white',
 ):
-    import matplotlib.pyplot as plt
-    import numpy as np
 
     grid_size = len(x)
     r_targets = sorted([float(k) for k in results])
@@ -125,11 +123,16 @@ def analyze_mtf_across_field(
             coords = results[k_str]['points'][wl]
             xdots = coords[:, 0] - results[k_str]['xmean']
             ydots = coords[:, 1] - results[k_str]['ymean']
-
-            airy_r = airy_radius_by_wl[wl]
-
+            
+            if airy_radius_by_wl:
+                airy_x = airy_radius_by_wl[wl]
+                airy_y = airy_radius_by_wl[wl]
+            else:
+                airy_x = results[k_str]['airy'][wl][0]
+                airy_y = results[k_str]['airy'][wl][1]
+            
             psf_wl = convolver_fn(x, y, xdots, ydots,
-                                  airy_x=airy_r, airy_y=airy_r,
+                                  airy_x=airy_x, airy_y=airy_y,
                                   I0=1.0)
 
             psf_total += weights[wl] * psf_wl

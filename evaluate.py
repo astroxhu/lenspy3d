@@ -326,15 +326,26 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
         #canvas = DynamicAdditiveScatterMask(ax, s=3)
         
         points_by_type = {}
+        airy_by_type = {}
         for raytype in ray_types:
 
             rays = result[raytype]
             raycolor = rays[0].color
-            print('raycolor', raycolor, raytype, rays[0].nlist[-2])
-            points = [ray.point_at_z(z_focus) for ray in rays if ray.reach_z(z_focus)]
+            print('raycolor', raycolor, raytype, 'wl',rays[0].wavelength)
+            result_points = [(ray.point_at_z(z_focus), ray.ps[1]) for ray in rays if ray.reach_z(z_focus)]
+            points, points_at_front = zip(*result_points) if result_points else ([], [])
             #print('points',points)
             coords = np.array(points)
+            coords_front = np.array(points_at_front)
             points_by_type[raytype] = coords
+
+            eff_ap = coords_front.max(axis=0) - coords_front.min(axis=0)
+
+            airy_x = 1.22*rays[0].wavelength/eff_ap[0]*788.
+            airy_y = 1.22*rays[0].wavelength/eff_ap[1]*788.
+
+            airy_by_type[raytype] = [airy_x,airy_y]
+
             #sc_multi.add_points((coords[:, 0]-xmean)*1e3, (coords[:, 1]-ymean)*1e3, color=raycolor, ax_index=i)
             if plot:
                 canvas.add_points((coords[:, 0]-xmean)*1e3, (coords[:, 1]-ymean)*1e3, color=raycolor)
@@ -347,6 +358,7 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
             'xmean': xmean,
             'ymean': ymean,
             'points': points_by_type,
+            'airy': airy_by_type,
         }
         if plot:
             ax.set_title(f"r ≈ {r_target} mm")
@@ -406,40 +418,9 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
 results = focal_plane_scan_render(optic_data, build_system_and_trace, find_focus, y_targets=focal_y, catalog=catalog, num_rays=numray,legend=False)
 #focal_plane_scan(optic_data, build_system_and_trace, find_focus, y_targets=[1,2,3,4,5], catalog=catalog, num_rays=numray,legend=True)
 
-fig=plt.figure()
-ax=plt.subplot(111)
-for key in results:
-    print('key of results', key)
-
-
-coords = np.concatenate([results[key]['points'][wl] for wl in wls], axis=0)
-
-xdots = coords[:,0] - results[key]['xmean']
-ydots = coords[:,1] - results[key]['ymean']
-
-grid_size = 100
-s_limit = 20e-3
-pixel = s_limit/grid_size
-x = np.linspace(-s_limit/2, s_limit/2, grid_size)
-y = np.linspace(-s_limit/2, s_limit/2, grid_size)
-
-    #X, Y = np.meshgrid(x, y)
-
-convolved = convolve_dots(x, y, xdots, ydots, airy_x=3.8e-3, airy_y=3.8e-3, I0=1.0)
-
-pcm = ax.pcolormesh(x, y, convolved, shading='auto', cmap='viridis')
-
-#plt.colorbar(pcm, ax=ax, label='Intensity')
-ax.set_aspect('equal')
-plt.show()
 
 from mtf import *
 
-psf_white = convolved/convolved.sum()
-
-
-# Example call
-mtf2d, fx, fy, mtf_x, mtf_y, mtf_x_interp, mtf_y_interp, _ = compute_mtf(psf_white, pixel_size_mm=pixel, plot=True)
 
 # Interpolate MTF at 100 cycles/mm for X and Y directions
 print("MTF at 100 cycles/mm (X):", mtf_x_interp(100))
