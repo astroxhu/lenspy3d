@@ -220,8 +220,9 @@ def parse_optical_file(file_path,loc=0):
             continue
         elif parts[0].lower() == 'bf':
             print('bf',parts)
-            variable_surface_no = max(variable_surfaces)
-            variable_surface_locations[variable_surface_no] = [float(p.replace('−', '-')) for p in parts[1:] if p.strip()]
+            if len(variable_surfaces) > 0:
+                variable_surface_no = max(variable_surfaces)
+                variable_surface_locations[variable_surface_no] = [float(p.replace('−', '-')) for p in parts[1:] if p.strip()]
     # Process variable surfaces
     for surface_no in variable_surfaces:
         print('variable', variable_surface_locations,surface_no)

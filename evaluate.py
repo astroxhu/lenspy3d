@@ -4,35 +4,75 @@ import optictxt
 from lenspy3d import *
 from getglass import *
 from plottools import *
-#digtype=np.float64
 
-numray=200
+digtype=np.float16
+
+numray=300
 folder = 'samples'
-filename = folder+"/"+"apo130f7.7.txt"
-
+wls = ["g", "F", "e", "d", "C"]
+wl0 = "e"
+use_catalog=True
+focal_y=[-4,-8,-12,-17,-22]
+focal_y=[4,8,12,17,22]
+aperture_fac=0.95
+#filename = folder+"/"+"apo130f7.7.txt"
+filename = '../lenspy/samples/Nikkor856eairdiam.txt' 
+#filename = '../lenspy/samples/Nikkor640eairdiam.txt' 
 optic_data = optictxt.parse_optical_file(filename)
 
-#print(optic_data)
+optic_data = dict(list(optic_data.items())[:])
+print(optic_data)
+
+# Example usage:
+glassdata = 'glass/OHARA_20250312_6merge.csv'
+glassdata = 'glass/Optical Glass Lookup Table(Typecode Reference).csv'
+catalog = load_glass_catalog(glassdata)
+print('catalog loaded')
+print(catalog['manufacturer'][10:30])
+print(catalog['vd'])
+#print('catalog\n',catalog.loc['S-NPH7']['a4'])
+print('glass params',catalog.iloc[1])
+
+
+for label in catalog.index:
+    # Access the row by its index (label) and print its content (all columns for that row)
+    row = catalog.loc[label]
+    #print(f"Label: {label}")
+    #print(row)
+
+if use_catalog:
+    assign_glasses_to_lens_data(optic_data, catalog, N=3)
+if not use_catalog:
+    catalog = None
+
+system = SurfaceSystem(optic_data, catalog=catalog)
+ax=system.draw_lens()
+
+ray_gen2d(system, ax)
+plt.show()
 
 
 
-def build_system_and_trace(optical_data, catalog=None, wavelengths=("g", "F", "e", "d", "C"), num_rays=50, raygen_kwargs=None, aperture=None):
+def build_system_and_trace(optical_data, catalog=None, wavelengths=wls, num_rays=20, raygen_kwargs=None, aperture=None):
     system = SurfaceSystem(optical_data, catalog=catalog)
-    #print('system')
+    #print('system assembled')
     #for surf in system.surfaces:
-        #print(surf)
+    #    print(surf)
     surf0 = system.surfaces[0]
     if raygen_kwargs is None:
         raygen_kwargs = {}
     if aperture:
         aperture0=aperture
     else:
-        aperture0=surf0.diam*0.99
+        aperture0=surf0.diam*aperture_fac
     base_rays = ray_gen(**raygen_kwargs, z1 = surf0.z0, aperture=aperture0, num_rays=num_rays, random=False)
+    #print("num of base rays=",len(base_rays))
     rays_by_wavelength = {}
     for wl in wavelengths:
         #print('wl',wl)
-        rays = [Ray3D(ray.ps[0], ray.direc.copy(), color='C0', wavelength=wl) for ray in base_rays]
+        rays = [Ray3D(ray.ps[0], ray.direc.copy(), color='C0', wavelength=wl, n0=1.00277) for ray in base_rays]
+        #for ray in rays:
+        #    print('init rays',ray.current_point(), ray.direc)
         traced = system.trace(rays)
         #for ray in traced:
         #    print('traced rays',ray.current_point(), ray.direc)
@@ -40,17 +80,17 @@ def build_system_and_trace(optical_data, catalog=None, wavelengths=("g", "F", "e
     return rays_by_wavelength
 
 def focal_plane_scan(optic_data, build_system_and_trace, find_focus,catalog=None,
-                     y_targets=[4, 8, 12, 17, 22], x0=0, z0=-1e8, num_rays=500,plotsize=15, legend=False):
+                     y_targets=[4, 8, 12, 17, 22], x0=0, z0=-1e8, num_rays=500,plotsize=15, legend=False, wavelengths=wls):
     #surf0 = optic_data
     # Step 1: Find focal plane using central ray
     center_kwargs = {'x0': x0, 'y0': 0, 'z0': z0}
     result_center = build_system_and_trace(optic_data, catalog=catalog,raygen_kwargs=center_kwargs, num_rays=num_rays)
-    rays_center = result_center['e']
+    rays_center = result_center[wl0]
     z_focus = find_focus(rays_center, radius=65, plot=False, quick_focus=False)
     print(f"the focal plane is at {z_focus:.1f} mm")
     # Step 2: Try different y0 to match radius on focal plane
     y0_candidates = np.linspace(0, -1.1*z0/z_focus*y_targets[-1], 50)  # mm
-    r_targets = np.array(y_targets)
+    r_targets = abs(np.array(y_targets))
     matched_y0s = []
 
     for r in r_targets:
@@ -59,7 +99,7 @@ def focal_plane_scan(optic_data, build_system_and_trace, find_focus,catalog=None
         for y0_try in y0_candidates:
             try_kwargs = {'x0': x0, 'y0': y0_try, 'z0': z0}
             result = build_system_and_trace(optic_data, catalog=catalog, raygen_kwargs=try_kwargs, num_rays=1,aperture=0.1)
-            rays = result['e']
+            rays = result[wl0]
             points = [ray.point_at_z(z_focus) for ray in rays if ray.reach_z(z_focus)]
             if not points:
                 continue
@@ -86,7 +126,7 @@ def focal_plane_scan(optic_data, build_system_and_trace, find_focus,catalog=None
     axs = axs.ravel()
 
 
-    ray_types = ["g", "F", "e", "d", "C"]  # This can be supplied as a variable
+    ray_types = wavelengths #["g", "F", "e", "d", "C"]  # This can be supplied as a variable
     colorlist=[]
     wl_list = []
     for raytype in ray_types:
@@ -108,7 +148,7 @@ def focal_plane_scan(optic_data, build_system_and_trace, find_focus,catalog=None
             continue
         result = build_system_and_trace(optic_data, catalog=catalog, raygen_kwargs={'x0': x0, 'y0': y0_val, 'z0': z0}, num_rays=num_rays)
         #for raytype, raysize in zip(ray_types, ray_sizes):
-        rays = result['e']
+        rays = result[wl0]
         points = [ray.point_at_z(z_focus) for ray in rays if ray.reach_z(z_focus)]
         coords = np.array(points)
         xmean = np.mean(coords[:, 0])
@@ -121,7 +161,7 @@ def focal_plane_scan(optic_data, build_system_and_trace, find_focus,catalog=None
 
             rays = result[raytype]
             raycolor = rays[0].color
-            #print('raycolor', raycolor)
+            #print('raycolor', raycolor, raytype, rays[0].nlist[-2])
             points = [ray.point_at_z(z_focus) for ray in rays if ray.reach_z(z_focus)]
             #print('points',points)
             coords = np.array(points)
@@ -177,17 +217,17 @@ def focal_plane_scan(optic_data, build_system_and_trace, find_focus,catalog=None
 
 
 def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catalog=None,
-                     y_targets=[4, 8, 12, 17, 22], x0=0, z0=-1e8, num_rays=500,plotsize=15, legend=False):
+                     y_targets=[4, 8, 12, 17, 22], x0=0, z0=-1e8, num_rays=500,plotsize=25, spotsize=30, legend=False):
     #surf0 = optic_data
     # Step 1: Find focal plane using central ray
     center_kwargs = {'x0': x0, 'y0': 0, 'z0': z0}
     result_center = build_system_and_trace(optic_data, catalog=catalog,raygen_kwargs=center_kwargs, num_rays=num_rays)
-    rays_center = result_center['e']
+    rays_center = result_center[wl0]
     z_focus = find_focus(rays_center, radius=65, plot=False, quick_focus=False)
     print(f"the focal plane is at {z_focus:.1f} mm")
     # Step 2: Try different y0 to match radius on focal plane
-    y0_candidates = np.linspace(0, -1.1*z0/z_focus*y_targets[-1], 50)  # mm
-    r_targets = np.array(y_targets)
+    y0_candidates = np.linspace(0, 1.1*z0/z_focus*y_targets[-1], 50)  # mm
+    r_targets = abs(np.array(y_targets))
     matched_y0s = []
 
     for r in r_targets:
@@ -196,7 +236,7 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
         for y0_try in y0_candidates:
             try_kwargs = {'x0': x0, 'y0': y0_try, 'z0': z0}
             result = build_system_and_trace(optic_data, catalog=catalog, raygen_kwargs=try_kwargs, num_rays=1,aperture=0.1)
-            rays = result['e']
+            rays = result[wl0]
             points = [ray.point_at_z(z_focus) for ray in rays if ray.reach_z(z_focus)]
             if not points:
                 continue
@@ -225,7 +265,7 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
 
     #sc_multi = AdditiveScatterMulti(fig, axs, s=100)
 
-    ray_types = ["g", "F", "e", "d", "C"]  # This can be supplied as a variable
+    ray_types = wls  # This can be supplied as a variable
     colorlist=[]
     wl_list = []
     for raytype in ray_types:
@@ -247,7 +287,7 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
             continue
         result = build_system_and_trace(optic_data, catalog=catalog, raygen_kwargs={'x0': x0, 'y0': y0_val, 'z0': z0}, num_rays=num_rays)
         #for raytype, raysize in zip(ray_types, ray_sizes):
-        rays = result['e']
+        rays = result[wl0]
         points = [ray.point_at_z(z_focus) for ray in rays if ray.reach_z(z_focus)]
         coords = np.array(points)
         xmean = np.mean(coords[:, 0])
@@ -255,7 +295,7 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
 
         ax.set_xlim(-plotsize/2,plotsize/2)
         ax.set_ylim(-plotsize/2,plotsize/2)
-        canvas = AdditiveScatterCanvas(ax, s=10)
+        canvas = AdditiveScatterCanvas(ax, s=spotsize)
         #canvas = DynamicAdditiveScatterFig(ax, s=3)
         #canvas = DynamicAdditiveScatterMask(ax, s=3)
 
@@ -263,7 +303,7 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
 
             rays = result[raytype]
             raycolor = rays[0].color
-            #print('raycolor', raycolor)
+            print('raycolor', raycolor, raytype, rays[0].nlist[-2])
             points = [ray.point_at_z(z_focus) for ray in rays if ray.reach_z(z_focus)]
             #print('points',points)
             coords = np.array(points)
@@ -322,23 +362,10 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
 
 
 
+#focal_plane_scan_render(optic_data, build_system_and_trace, find_focus, y_targets=[1,2,3,4,5], catalog=catalog, num_rays=numray,legend=True)
+focal_plane_scan_render(optic_data, build_system_and_trace, find_focus, y_targets=focal_y, catalog=catalog, num_rays=numray,legend=False)
+#focal_plane_scan(optic_data, build_system_and_trace, find_focus, y_targets=[1,2,3,4,5], catalog=catalog, num_rays=numray,legend=True)
 
-
-
-
-# Example usage:
-glassdata = 'glass/OHARA_20250312_6.csv'
-catalog = load_glass_catalog(glassdata)
-
-print('catalog\n',catalog.loc['S-NPH7']['a4'])
-
-focal_plane_scan_render(optic_data, build_system_and_trace, find_focus, y_targets=[1,2,3,4,5], catalog=catalog, num_rays=numray,legend=True)
-
-for label in catalog.index:
-    # Access the row by its index (label) and print its content (all columns for that row)
-    row = catalog.loc[label]
-    #print(f"Label: {label}")
-    #print(row)
 
 #for col, value in catalog.loc['S-NPH 7'].items():
 #    print(f"Column: {col}, Value: {value}")
@@ -348,9 +375,10 @@ raygen_kwargs = {
     'y0':0e6,
     'z0':-1e8,
 }
+
 results = build_system_and_trace(optic_data, catalog=catalog, num_rays=numray, raygen_kwargs=raygen_kwargs)
 
-rays = results["e"]
+rays = results[wl0]
 
 
 z_plane0=find_focus(rays,radius=65,plot=True, quick_focus=False, metric='rms')

@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
+from getglass import *
 
 FRAUNHOFER_WAVELENGTHS = {
     'h': 404.7,
@@ -20,11 +21,11 @@ FRAUNHOFER_COLORS = {
     #'g': (60, 80, 255),     # deep blue
     'g': (80, 0, 255),     # violet
     "F'": (65, 100, 255),   # blue
-    'F': (80, 220, 255),    # cyan-blue
+    'F': (80, 180, 255),    # cyan-blue
     'e': (0, 255, 40),       # green
-    'd': (240, 160, 80),     # golden yellow
+    'd': (240, 200, 40),     # golden yellow
     'D': (255, 180, 0),     # yellow
-    "C'": (255, 0, 20),      # red
+    "C'": (255, 0, 50),      # red
     'C': (255, 0, 0),       # red
     'r': (128, 0, 0),       # deep red (near IR)
 }
@@ -42,6 +43,9 @@ _AIR_REFRACTIVE_INDEX = {
     768.2: 1.00026769,
 }
 
+n_air0 = 1+1e-4 #1.00027922
+#n_air0 = 1
+
 def n_air(wavelength_mm):
     wl_nm = wavelength_mm * 1e6
     known_wls = np.array(sorted(_AIR_REFRACTIVE_INDEX.keys()))
@@ -49,7 +53,18 @@ def n_air(wavelength_mm):
     if wl_nm < known_wls[0] or wl_nm > known_wls[-1]:
         print(f"⚠️ Wavelength {wl_nm:.1f} nm is outside air index data range ({known_wls[0]}–{known_wls[-1]} nm). Using nearest value.")
         wl_nm = np.clip(wl_nm, known_wls[0], known_wls[-1])
+    return n_air0
     return np.interp(wl_nm, known_wls, known_ns)
+
+def get_surface_edge_z(surf, y):
+    R = surf.R
+    if abs(R) > 1e10:  # Flat surface
+        return surf.z0
+    else:
+        try:
+            return surf.z0 + R - np.sign(R) * np.sqrt(R**2 - y**2)
+        except ValueError:
+            return surf.z0  # fallback if y > R (shouldn't happen if diam is sane)
 
 import pandas as pd
 import numpy as np
@@ -95,12 +110,14 @@ def get_index_from_catalog(glass_name, wavelength_mm, catalog):
     return np.interp(wavelength_nm, wls, ns)
 
 class Ray3D:
-    def __init__(self, ps, direc, color='k', wavelength=550):
+    def __init__(self, ps, direc, color='k', wavelength=550, n0=None):
         self.ps = np.array([ps])
         self.direc = np.array(direc)
         self.direc /= np.linalg.norm(direc)
         self.color = color
-
+        self.nlist = []
+        if n0 is not None:
+            self.nlist = [n0]
         if isinstance(wavelength, str):
             if wavelength in FRAUNHOFER_WAVELENGTHS:
                 self.wavelength = FRAUNHOFER_WAVELENGTHS[wavelength] * 1e-6  # nm → mm
@@ -127,6 +144,12 @@ class Ray3D:
 
     def current_point(self):
         return self.ps[-1]
+
+    def add_n(self,new_n):
+        return self.nlist.append(new_n)
+
+    def current_n(self):
+        return self.nlist[-1]
     
     def reach_z(self, z):
         """Return True if the ray's path or its forward extension reaches z."""
@@ -170,54 +193,84 @@ class SphericalSurface:
     def __init__(self, R, diam, z0, x0=0.0, y0=0.0,
                  n_in=1.0, n_out=1.0,
                  glass_in=None, glass_out=None,
-                 use_vacuum=False):
+                 use_vacuum=False, formula=None, ncoeffs=None, manufacturer=None, debug=False, is_diaphragm = False, line_match=False):
         self.R = R
         self.diam = diam
         self.rad = diam / 2.0
         self.x0 = x0
         self.y0 = y0
         self.z0 = z0
-        self.center = np.array([x0, y0, z0 + R])
+        self.is_diaphragm = is_diaphragm
+        self.is_flat = np.isinf(self.R)
+        
+        if not self.is_flat:
+            self.center = np.array([x0, y0, z0 + R])
+        else:
+            self.center = None  # Not used for flat
+
+        if self.is_flat: 
+            self.z_top = self.z0
+            self.z_bot = self.z0
+        else:
+            self.z_top = self.z0 + self.R - np.sign(self.R) * np.sqrt(self.R**2 - self.rad**2)
+            self.z_bot = self.z0 + self.R - np.sign(self.R) * np.sqrt(self.R**2 - self.rad**2)
+
+        
+
         self.default_n_in = n_in
         self.default_n_out = n_out
         self.glass_in = glass_in
         self.glass_out = glass_out
         self.use_vacuum = use_vacuum
+        self.formula = formula
+        self.ncoeffs = ncoeffs
+        self.manufacturer = manufacturer
+        self.line_match = line_match
+        self.n_dict=dict()
+        self.debug = debug
 
-    def get_refractive_indices(self, wavelength_mm, catalog=None):
+    def get_refractive_indices(self, wavelength_mm):
         """Return (n_in, n_out) at given wavelength (in nm), using the Sellmeier catalog if available."""
 
         def is_air(glass_name, default_n):
-            return (glass_name is None or glass_name.lower() == 'air' or abs(default_n - 1.0) < 4e-4)
+            return (glass_name is None or glass_name.lower() == 'air' or abs(default_n - 1.0) < 5e-4)
 
-        def resolve(glass_name, default_n):
-            if catalog is not None and glass_name in catalog.index:
-                row = catalog.loc[glass_name]
-                λ_um = wavelength_mm * 1000.0  # convert nm to µm
-                λ2 = λ_um ** 2
-                A1, A2, A3 = row['a1'], row['a2'], row['a3']
-                B1, B2, B3 = row['b1'], row['b2'], row['b3']
-                #print(glass_name, 'A Bs',A1,A2,A3,B1,B2,B3)
-                n2 = 1 + (A1 * λ2 / (λ2 - B1)) + (A2 * λ2 / (λ2 - B2)) + (A3 * λ2 / (λ2 - B3))
-                return np.sqrt(n2)
+        def resolve(default_n):
+            if self.line_match:
+                wavelength_nm =  wavelength_mm*1e6
+                # Wavelengths (nm) and corresponding catalog keys
+                wl_nm = [435.8, 486.1, 546.1, 587.6, 656.3]
+
+                n_keys = ["ng", "nF", "ne", "nd", "nC"]
+
+                differences = [abs(wavelength_nm - wl) for wl in wl_nm]
+                index = differences.index(min(differences))
+                n_idx = n_keys[index]
+                n_match = self.n_dict[n_idx]
+                return n_match
+            if self.ncoeffs is not None:
+                n_compute = compute_refractive_index(self.formula, self.ncoeffs, wavelength_mm, self.manufacturer)
+                if abs(n_compute-default_n)>0.2:
+                    print("n_compute",n_compute,default_n, self.manufacturer,self.glass_out)
+                return n_compute
             return default_n  # fallback
 
         if self.use_vacuum:
             return 1.0, 1.0
 
         # Determine n_in
-        if is_air(self.glass_in, self.default_n_in):
-            n1 = 1.0
-        else:
-            n1 = resolve(self.glass_in, self.default_n_in)
+        #if is_air(self.glass_in, self.default_n_in):
+        #    n1 = n_air(wavelength_mm)
+        #else:
+        #    n1 = resolve(self.default_n_in)
 
         # Determine n_out
         if is_air(self.glass_out, self.default_n_out):
-            n2 = 1.0
+            n2 = n_air(wavelength_mm)
         else:
-            n2 = resolve(self.glass_out, self.default_n_out)
+            n2 = resolve(self.default_n_out)
 
-        return n1, n2
+        return n2
 
 
     def __str__(self):
@@ -225,7 +278,8 @@ class SphericalSurface:
                 f"  R={self.R},\n"
                 f"  diam={self.diam}, rad={self.rad},\n"
                 f"  x0={self.x0}, y0={self.y0}, z0={self.z0},\n"
-                f"  center={self.center.tolist()},\n"
+                #f"  center={self.center.tolist()},\n"
+                f"  center={self.center},\n"
                 f"  n_in={self.default_n_in}, n_out={self.default_n_out},\n"
                 f"  glass_in={self.glass_in}, glass_out={self.glass_out},\n"
                 f")")
@@ -233,43 +287,71 @@ class SphericalSurface:
 
 
     def intersect(self, p0, d):
+        if self.is_flat:
+        # Ray-plane intersection at z = self.z0
+            dz = d[2]
+            if dz == 0:
+                print('parallel')
+                return [np.nan,np.nan,np.nan]  # Ray is parallel to the plane
+            t = (self.z0 - p0[2]) / dz
+            if t < 0:
+                return [np.nan,np.nan,np.nan]  # Intersection behind ray origin
+            hit = p0 + t * d
+            # Check if within aperture
+            if np.linalg.norm(hit[:2] - np.array([self.x0, self.y0])) > self.rad:
+                if self.debug:
+                    print('outside flat',hit,np.linalg.norm(hit[:2] - np.array([self.x0, self.y0])),self.rad)
+                return [np.nan,np.nan,np.nan]
+            return hit
+
         oc = p0 - self.center
         a = np.dot(d, d)
         b = 2.0 * np.dot(oc, d)
         c = np.dot(oc, oc) - self.R**2
         discriminant = b**2 - 4*a*c
         if discriminant < 0:
-            return None
+            if self.debug:
+                print('outside sphere', oc, self.R)
+            return [np.nan,np.nan,np.nan]
         sqrt_disc = np.sqrt(discriminant)
         t0 = (-b - sqrt_disc) / (2*a)
         t1 = (-b + sqrt_disc) / (2*a)
         t = t0 if t0 > 0 else t1
         if t < 0:
-            return None
+            if self.debug:
+                print('intersect backward',t)
+            return [np.nan,np.nan,np.nan]
         hit = p0 + t * d
         r = np.linalg.norm(hit[:2] - np.array([self.x0, self.y0]))
         if r > self.rad:
-            return None
+            if self.debug:
+                print('outside aperture', hit, r, self.rad)
+            return [np.nan,np.nan,np.nan]
         return hit
 
     def normal(self, pt):
-        return (pt - self.center) / np.linalg.norm(pt - self.center)*np.sign(self.R)
+        if self.is_flat:
+            return np.array([0, 0, -1])  # Assumes surface is perpendicular to z-axis
+        else:
+            return (pt - self.center) / np.linalg.norm(pt - self.center)*np.sign(self.R)
 
     def refract(self, d_in, normal, n1, n2):
         cos_i = -np.dot(normal, d_in)
         sin2_t = (n1/n2)**2 * (1 - cos_i**2)
         if sin2_t > 1.0:
-            return None
+            return [np.nan,np.nan,np.nan]
         cos_t = np.sqrt(1 - sin2_t)
         return (n1/n2) * d_in + (n1/n2 * cos_i - cos_t) * normal
 
 class SurfaceSystem:
-    def __init__(self, optical_data_list, catalog=None):
+    def __init__(self, optical_data_list, catalog=None, n_keys=["ng", "nF", "ne", "nd", "nC"], debug=False):
         self.surfaces = []
         self.catalog = catalog
+        self.n_keys = n_keys
         cumulative_z = 0.0
-        n_in = 1.0
+        n_in = n_air0
         glass_in = 'air'
+        self.debug=debug
         for i, data in optical_data_list.items():
             #if data.get('type', 'sphere') != 'sphere':
             #    continue
@@ -281,6 +363,24 @@ class SurfaceSystem:
                 z_pos = cumulative_z
                 cumulative_z += data.get('d', 0.0)
 
+            # Retrieve glass information from catalog
+            if self.catalog is not None and 'glass' in data and data['nd']>1.005:
+                glass_type = data['glass']
+                # Get the glass parameters from catalog, e.g., formula for n and glass properties
+                
+                glass_data = self.catalog.loc[glass_type]
+                # Formula for refractive index calculation
+                formula = glass_data['Formula']
+                manufacturer = glass_data['manufacturer']
+                # For example, As (a4) might be relevant for other glass properties
+                ncoeffs = np.array([glass_data[f'a{i}'] for i in range(1, 7)])  # if you need to use it elsewhere
+                n_dict=dict(zip(n_keys, glass_data[n_keys]))
+
+            else:
+                formula = None
+                ncoeffs = None
+                manufacturer = None
+
             surf = SphericalSurface(
                 R=data['r'],
                 diam=data['diam'],
@@ -289,40 +389,142 @@ class SurfaceSystem:
                 n_out=data['nd'] if data['nd'] > 1.0 else 1.0,
                 glass_in = glass_in,
                 glass_out=data.get('glass'),
+                formula = formula,
+                ncoeffs = ncoeffs,
+                manufacturer = manufacturer,
+                #is_diaphragm = is_diaphragm
                 #catalog=catalog
             )
+            surf.n_dict = n_dict
             n_in = surf.default_n_out
             glass_in = surf.glass_out
             self.surfaces.append(surf)
+
+    def add_surface(self, R, diam, z0, x0=0.0, y0=0.0,
+                 n_in=n_air0, n_out=n_air0,
+                 glass_in=None, glass_out=None,
+                 use_vacuum=False, formula=None, ncoeffs=None, manufacturer=None, debug=False, is_diaphragm = False, line_match=False):
+        surf = SphericalSurface(
+                R=R,
+                diam=diam,
+                z0=z0,
+                n_in=n_in,
+                n_out=n_out,
+                glass_in = glass_in,
+                glass_out = glass_out,
+                formula = formula,
+                ncoeffs = ncoeffs,
+                manufacturer = manufacturer,
+                #is_diaphragm = is_diaphragm
+                #catalog=catalog
+            )
+        self.surfaces.append(surf)
+
+ 
+
 
     def trace(self, rays):
         for surface in self.surfaces:
             updated_rays = []
             for ray in rays:
-                pt = surface.intersect(ray.current_point(), ray.direc)
-                if pt is None:
+                if np.isnan(ray.current_point()[2]):
                     continue
+
+                pt = surface.intersect(ray.current_point(), ray.direc)
                 ray.add_point(pt)
+                if np.isnan(pt[2]):
+                    if self.debug:
+                        print('pt in trace', pt)
+                    continue
                 N = surface.normal(pt)
 
                 # Use catalog to resolve actual indices for this wavelength
                 if self.catalog is not None:
-                    n1, n2 = surface.get_refractive_indices(ray.wavelength, catalog=self.catalog)
+                    n1 = ray.current_n()
+                    n2 = surface.get_refractive_indices(ray.wavelength) ## will need to fix n1 
                     #print('wl', ray.wavelength, 'n1',n1,'n2',n2)
                 else:
                     n1 = surface.default_n_in
                     n2 = surface.default_n_out
-
+                    #print('default', 'n1',n1,'n2',n2)
+                
                 T = surface.refract(ray.direc, N, n1, n2)
                 if T is None:
+                    print('T',T)
                     continue
                 ray.direc = T / np.linalg.norm(T)
+                ray.add_n(n2)
                 updated_rays.append(ray)
             rays = updated_rays
         return rays
 
+    def draw_lens(self, ax=None,color='k',lw=0.8, diaphragm_size=8):
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(10, 5))
 
-def ray_gen(x0=0, y0=0, z0=-1e10, num_rays=50, R1=1.0, z1=0.0, aperture=10.0, random=True):
+        ax.set_aspect('equal')
+        ax.set_xlabel('Optical axis (z)')
+        ax.set_ylabel('Height (y)')
+        y_max=0
+        for i, surf in enumerate(self.surfaces):
+            z = surf.z0
+            R = surf.R
+            diam = surf.diam
+            rad = surf.rad
+            if rad>y_max:
+                y_max=rad
+
+            # Diaphragm check
+            is_diaphragm = (
+                abs(surf.default_n_in - 1.0) < 0.0005 and
+                abs(surf.default_n_out - 1.0) < 0.0005 and
+                #(surf.glass_in == 'air' and surf.glass_out == 'air') and
+                abs(R) > 1e10  # effectively flat
+            )
+            if is_diaphragm:
+                ax.plot([z, z], [rad, rad+diaphragm_size], color, linewidth=lw)
+                ax.plot([z, z], [-diaphragm_size-rad, -rad], color, linewidth=lw)
+                ax.text(z, -rad - diaphragm_size*2, 'Diaphragm', ha='center', fontsize=10, va='top')
+                continue
+
+            # Draw curved or flat surface
+            if abs(R) > 1e10:  # flat surface
+                ax.plot([z, z], [-rad, rad], color, lw=lw)
+            else:
+                sag_sign = np.sign(R)
+                center_z = z + R
+                theta = np.linspace(-np.arcsin(rad / abs(R)), np.arcsin(rad / abs(R)), 200)
+                y_arc = R * np.sin(theta)
+                z_arc = center_z - R * np.cos(theta)
+                ax.plot(z_arc, y_arc, color, lw=lw)
+
+            # Optional: connect lens edges
+            if i < len(self.surfaces) - 1:
+                next_surf = self.surfaces[i + 1]
+                if abs(surf.default_n_out) > 1.0005:  # optical interface
+                    y1 = diam / 2
+                    y2 = next_surf.diam / 2
+                    if y1 >= y2:
+                        ax.plot([surf.z_top, next_surf.z_top], [y1, y1], color,lw=lw)
+                        ax.plot([next_surf.z_bot, next_surf.z_top], [y2, y1], color,lw=lw)
+                        
+                        ax.plot([surf.z_top, next_surf.z_top], [-y1, -y1], color, lw=lw)
+                        ax.plot([next_surf.z_bot, next_surf.z_top], [-y2, -y1], color, lw=lw)
+                    else:
+                        ax.plot([surf.z_top, next_surf.z_top], [y2, y2], color, lw=lw)
+                        ax.plot([surf.z_bot, surf.z_top], [y2, y1], color, lw=lw)
+                        
+                        ax.plot([surf.z_top, next_surf.z_top], [-y2, -y2], color, lw=lw)
+                        ax.plot([surf.z_bot, surf.z_top], [-y2, -y1], color, lw=lw)
+
+
+            # Draw lens body edge if next surface is part of same lens
+
+        ax.set_title("Lens System Layout")
+        ax.grid(True)
+        return ax
+
+def ray_gen(x0=0, y0=0, z0=-1e10, num_rays=50, R1=1.0, z1=0.0, aperture=10.0, random=True,n0=n_air0):
     rays = []
     aperture_radius = aperture / 2.0
     if random:
@@ -334,7 +536,8 @@ def ray_gen(x0=0, y0=0, z0=-1e10, num_rays=50, R1=1.0, z1=0.0, aperture=10.0, ra
             dx = x - x0
             dy = y - y0
             dz = z1 - z0
-            rays.append(Ray3D((x0, y0, z0), (dx, dy, dz)))
+            ray = Ray3D((x0, y0, z0), (dx, dy, dz),n0=n0)
+            rays.append(ray)
     else:
         num_rings = int(np.sqrt(num_rays))
         for i in range(num_rings):
@@ -347,8 +550,119 @@ def ray_gen(x0=0, y0=0, z0=-1e10, num_rays=50, R1=1.0, z1=0.0, aperture=10.0, ra
                 dx = x - x0
                 dy = y - y0
                 dz = z1 - z0
-                rays.append(Ray3D((x0, y0, z0), (dx, dy, dz)))
+                ray = Ray3D((x0, y0, z0), (dx, dy, dz),n0=n0)
+                rays.append(ray)
     return rays
+
+def ray_gen2d(system, ax=None, z0=-1e8,num_rays=100,y_targets=[0,4,8,12,17,22],
+    clist=['C0','C1','C2','C3','C4','C5']):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 5))
+
+    ax.set_aspect('equal')
+    ax.set_xlabel('Optical axis (z)')
+    ax.set_ylabel('Height (y)')
+
+    rad0=system.surfaces[0].rad
+    #center_kwargs = {'x0': x0, 'y0': 0, 'z0': -1e10}
+    x0 = 0.
+    rays = ray_gen(x0=0, y0=0, z0=z0, num_rays=num_rays,aperture=rad0/1.5*2)
+    rays_center = system.trace(rays)
+    z_focus = find_focus(rays_center, radius=rad0, plot=False, quick_focus=False)
+    
+    y0_candidates = np.linspace(0, -1.1*z0/z_focus*y_targets[-1], 50)  # mm
+    r_targets = abs(np.array(y_targets))
+    matched_y0s = []
+
+    for r in r_targets:
+        best_y0 = None
+        min_err = np.inf
+        for y0_try in y0_candidates:
+            #try_kwargs = {'x0': x0, 'y0': y0_try, 'z0': z0}
+            rays = ray_gen(x0=0, y0=y0_try, z0=z0, num_rays=1,aperture=rad0/10)
+            rays = system.trace(rays)
+            points = [ray.point_at_z(z_focus) for ray in rays if ray.reach_z(z_focus)]
+            if not points:
+                continue
+            coords = np.array(points)
+            rs = np.sqrt(coords[:, 0]**2 + coords[:, 1]**2)
+            median_r = np.median(rs)
+            err = abs(median_r - r)
+            if err < min_err:
+                best_y0 = y0_try
+                min_err = err
+        if best_y0 is not None:
+            matched_y0s.append(best_y0)
+        else:
+            matched_y0s.append(np.nan)
+
+    y_range_list=[]
+    for y0 in matched_y0s:
+        rays = []
+        for i in range(num_rays):
+            y = -rad0+i*2.0/num_rays*rad0
+            x0 = 0.
+            dx = 0 - x0
+            dy = y - y0
+            dz = 0 - z0
+            ray = Ray3D((x0, y0, z0), (dx, dy, dz),n0=n_air0)
+            rays.append(ray)
+        traced_rays=system.trace(rays)
+        y_max=-1e10
+        y_min=1e10
+        for ray in traced_rays:
+            if not np.isnan(ray.current_point()[2]):
+                if ray.ps[1,1]>y_max:
+                    y_max = ray.ps[1,1]
+                    print(f'y_max ray={y_max} ',ray.ps[22])
+                if ray.ps[1,1]<y_min:
+                    y_min = ray.ps[1,1]
+
+        y_range_list.append({'y0':y0,'y_min':y_min,'y_max':y_max,'z0':z0})
+
+    print('y_range',y_range_list)
+
+    demo_rays = []
+    print(matched_y0s)
+
+    for i in range(len(matched_y0s)):
+        y0 = y_range_list[i]['y0']
+        x0 = 0.
+        dx = 0.
+        dy = y_range_list[i]['y_min']-y0
+        dz = 0 - z0
+        ray1 = Ray3D((x0, y0, z0), (dx, dy, dz),n0=n_air0,color=clist[i])
+        demo_rays.append(ray1)
+
+        y0 = y_range_list[i]['y0']
+        x0 = 0.
+        dx = 0.
+        dy = y_range_list[i]['y_max']-y0
+        dz = 0 - z0
+        ray2 = Ray3D((x0, y0, z0), (dx, dy, dz),n0=n_air0,color=clist[i])
+        demo_rays.append(ray2)
+        
+        y0 = y_range_list[i]['y0']
+        x0 = 0.
+        dx = 0.
+        dy = (y_range_list[i]['y_max']+y_range_list[i]['y_min'])/2.-y0
+        dz = 0 - z0
+        ray3 = Ray3D((x0, y0, z0), (dx, dy, dz),n0=n_air0,color=clist[i])
+        demo_rays.append(ray3)
+
+    system.add_surface(R=np.inf, z0=z_focus, diam = 2*abs(y_targets[-1])+0.1)
+    print('TRACE DEMO')
+    system.trace(demo_rays)
+
+    for ray in demo_rays:
+        print('demo',ray.ps[-1],ray.ps[1])
+        path = np.array(ray.ps)
+        if not np.isnan(ray.current_point()[2]) or True:
+            ax.plot(path[1:, 2], path[1:, 1], color=ray.color, alpha=1,lw=0.5)
+
+    return ax
+
+
 
 def plot_rays(rays, is_2d=False, max_rays=20, radius=60,return_ax=False):
     fig = plt.figure(figsize=(10, 6))
@@ -374,7 +688,6 @@ def plot_rays(rays, is_2d=False, max_rays=20, radius=60,return_ax=False):
         sample = rays
     for ray in sample:
         path = np.array(ray.ps)
-        #print('path',path)
         if is_2d:
             #ax.plot(path[:, 2], np.sqrt(path[:, 0]**2+path[:, 1]**2)*np.sign(path[:,0]), color=ray.color, alpha=0.6)
             ax.plot(path[:, 2], path[:, 0], color=ray.color, alpha=1,lw=0.5)
@@ -418,6 +731,7 @@ def plot_focal_plane_hits(ax, rays, z_plane, plot=True, airy=True, wavelength=55
         return
     if plot:
         # Plot the ray intersections
+        print('Number of hits=',len(hits[:,0]))
         ax.scatter(hits[:, 0], hits[:, 1], s=0.1, alpha=0.6,color=raycolor)
         ax.set_title(f"Focal Plane Hits at z={z_plane}")
         ax.set_xlabel("X")
@@ -578,7 +892,6 @@ def spread_at_z(z, rays, metric='rms', center='median', **kwargs):
 
 def find_focus(rays, radius, num_samples=20, metric='rms', plot=False, quick_focus=False, method='grid', center='median', **kwargs):
     for ray in rays:
-        #print('ray',ray,ray.ps,ray.direc)
         if abs(ray.ps[1,0]-radius*0.8)<radius*0.1:
             ray1=ray
             break
