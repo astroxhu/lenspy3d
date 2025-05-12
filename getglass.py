@@ -95,14 +95,14 @@ class GlassCatalog:
 
     def match_glass_single(self, nd_lens, vd_lens, N=5):
         
-        #Find the closest matching glass by nd and νd.
+        #Find the closest matching glass by nd and vd.
         
         df = self.df
         nd_diffs = np.abs(df['nd'] - nd_lens)
         closest_nd_indices = nd_diffs.nsmallest(N).index
         subset = df.loc[closest_nd_indices]
 
-        vd_diffs = np.abs(subset['νd'] - vd_lens)
+        vd_diffs = np.abs(subset['vd'] - vd_lens)
         best_idx = vd_diffs.idxmin()
         row = self.df.loc[best_idx]
 
@@ -116,15 +116,15 @@ class GlassCatalog:
         
         matches = {}
         for i, lens in lens_data.items():
-            if 'nd' not in lens or 'νd' not in lens:
+            if 'nd' not in lens or 'vd' not in lens:
                 continue
-            name, _ = self.match_glass_single(lens['nd'], lens['νd'], N)
+            name, _ = self.match_glass_single(lens['nd'], lens['vd'], N)
             matches[i] = name
         return matches
 
 def match_glass_single(df, nd_lens, vd_lens, N=5):
     
-    #Find the closest matching glass by nd and νd.
+    #Find the closest matching glass by nd and vd.
     #:param df: pandas DataFrame with glass catalog
     #:param nd_lens: lens refractive index (nd)
     #:param vd_lens: lens Abbe number (νd)
@@ -168,13 +168,13 @@ def assign_glasses_to_lens_data(lens_data: dict, catalog_df: pd.DataFrame, N=3):
     for surf in lens_data.values():
         if surf.get('type', 'lens') == 'air':
             continue
-        if 'nd' not in surf or 'νd' not in surf:
+        if 'nd' not in surf or 'vd' not in surf:
             continue
         if surf['nd']<1.005:
             continue
 
         #glass_name, (B, C) = match_glass_single(catalog_df, surf['nd'], surf['νd'], N=N)
-        glass_name = match_glass_single(catalog_df, surf['nd'], surf['νd'], N=N)
+        glass_name = match_glass_single(catalog_df, surf['nd'], surf['vd'], N=N)
         surf['glass'] = glass_name
         #print(glass_name)
         #surf['B1'], surf['B2'], surf['B3'] = B
@@ -182,7 +182,7 @@ def assign_glasses_to_lens_data(lens_data: dict, catalog_df: pd.DataFrame, N=3):
 
     return lens_data
 
-def compute_refractive_index(model_str, coeffs, wavelength_mm, manufacturer=None, line_match=False):
+def compute_refractive_index(model_str, coeffs, wavelength_mm, manufacturer=None,glass_name=None, line_match=False):
     wavelength = wavelength_mm*1e3
     if line_match:
         # Wavelengths (nm) and corresponding catalog keys
@@ -230,8 +230,8 @@ def compute_refractive_index(model_str, coeffs, wavelength_mm, manufacturer=None
             C = coeffs[1::2]
             n_squared = 1 + sum(B[i] * wavelength**2 / (wavelength**2 - C[i]) for i in range(n_terms))
         n_val = np.sqrt(n_squared)
-        if n_val<1.3 or n_val > 1.9:
-            print('Sellmeier', n_val, n_terms, coeffs)
+        if n_val<1.3 or n_val > 2.1:
+            print('Sellmeier', manufacturer,glass_name, n_val, n_terms, coeffs)
 
 
     elif model_str.startswith("Schott"):
@@ -261,8 +261,8 @@ def compute_refractive_index(model_str, coeffs, wavelength_mm, manufacturer=None
         n_squared = sum(coeffs_p[i] * wavelength**(2*i) for i in range(n)) + sum(inverse_coeffs[i] * wavelength**(-2*(i+1)) for i in range(m))
         n_val = np.sqrt(n_squared)
         #n_val = A1+A2*wl**2+A3*wl**-2+A4*wl**-4+A5*wl**-6+A6*wl**-8
-        if n_val<1.3 or n_val > 1.9:
-            print('Schott', n_val, n,m, coeffs)
+        if n_val<1.3 or n_val > 2.1:
+            print('Schott',manufacturer, glass_name, n_val, n,m, coeffs)
 
     else:
         raise ValueError(f"Unknown model: {model_str}")

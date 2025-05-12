@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 from diffraction import *
 from plottools import *
+from lenspy3d import *
 
 def compute_mtf(psf, pixel_size_mm=None, plot=False, radial=False):
     """
@@ -303,3 +304,62 @@ def plot_results_psfs_grid(results, wls, weights, colors, extent=None, normalize
     fig_white.tight_layout()
 
     return fig_color, fig_white
+
+
+def get_weights(wls, plot=False, eye_only=False, d65_only=False):
+    
+    # Load CIE 1931 photopic luminosity function (Y values)
+    cie_data = np.loadtxt('glass/CIE_sle_photopic.csv', delimiter=',', skiprows=0)  # Adjust skiprows if necessary
+    cie_interp = interp1d(cie_data[:, 0], cie_data[:, 1], kind='linear', bounds_error=False, fill_value=0.0)
+
+    # Load D65 spectral power distribution (SPD)
+    d65_data = np.loadtxt('glass/CIE_std_illum_D65.csv', delimiter=',', skiprows=0)  # Adjust skiprows if necessary
+    d65_interp = interp1d(d65_data[:, 0], d65_data[:, 1], kind='linear', bounds_error=False, fill_value=0.0)
+
+    raw_weights = {}
+
+    for line in wls:
+        wl = FRAUNHOFER_WAVELENGTHS.get(line)
+
+        if wl is None:
+            wl = FRAUNHOFER_WAVELENGTHS.get(line)
+
+        S = d65_interp(wl)
+        V = cie_interp(wl)
+        raw_weights[line] = S * V 
+
+        if eye_only:
+            raw_weights[line] = V
+        if d65_only:
+            raw_weights[line] = S
+
+    total = sum(raw_weights.values())
+    if total == 0:
+        raise ValueError("Total weight is zero; check input/interpolators.")
+
+    normalized_weights = {line: val / total for line, val in raw_weights.items()}
+
+
+    if plot:
+        wavelengths = np.linspace(380, 780, 1000)
+        S_vals = d65_interp(wavelengths)
+        V_vals = cie_interp(wavelengths)
+        SV_vals = S_vals * V_vals
+
+        # Normalize
+        S_vals /= S_vals.max()
+        V_vals /= V_vals.max()
+        SV_vals /= SV_vals.max()
+
+        plt.figure(figsize=(8, 4))
+        plt.plot(wavelengths, S_vals, label='D65 (S)', color='blue')
+        plt.plot(wavelengths, V_vals, label='CIE 1931 Y (V)', color='green')
+        plt.plot(wavelengths, SV_vals, label='S * V', color='red')
+        plt.title('Spectral Weight Components (Normalized)')
+        plt.xlabel('Wavelength (nm)')
+        plt.ylabel('Relative Intensity')
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+    return normalized_weights

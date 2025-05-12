@@ -10,6 +10,7 @@ catalog = load_glass_catalog(glassdata)
 # List of glass names (can be up to 12)
 glass_names = ["N-BK7","Fluorite2", "LaC10", "Q-FKH1S", "J-LASF02", "J-LAFH3HS", "LaC14", "N-FK5", "J-K3", "LF5HTi", "S-TIM5", "J-LASF021HS", "J-KF6", "TaF5"]  # Example; can be any length ≤ 12
 
+glass_names = ['N-PK52A', 'FCD100', 'MP-TAF105', 'E-FL6', 'SF5', 'FCD515', 'TaFD30', 'E-FD80', 'FDS18-W', 'H-ZF11', 'E-FD4L', 'NbFD29', 'TaFD37']
 # Wavelengths (nm) and corresponding catalog keys
 wl_nm = [435.8, 486.1, 546.1, 587.6, 656.3]
 n_keys = ["ng", "nF", "ne", "nd", "nC"]
@@ -53,7 +54,9 @@ for i, glass_name in enumerate(glass_names):
     n_compute = np.array([ compute_refractive_index(formula, ncoeffs, lamb_mm, manufacturer) for lamb_mm in lamb_nm*1e-6])   
 
     ax.plot(lamb_nm, n_compute)
-    ax.set_title(glass_name)
+    n_mid = np.median(n_compute)
+    n_delta = np.max(n_compute) - np.min(n_compute)
+    ax.set_title(f"{glass_name} n={n_mid:.3f} d_n={n_delta:.3f}")
     ax.set_xlabel("Wavelength (nm)")
     ax.set_ylabel("Refractive Index n")
     ax.grid(True)

@@ -264,7 +264,7 @@ class SphericalSurface:
                 n_match = self.n_dict[n_idx]
                 return n_match
             if self.ncoeffs is not None:
-                n_compute = compute_refractive_index(self.formula, self.ncoeffs, wavelength_mm, self.manufacturer)
+                n_compute = compute_refractive_index(self.formula, self.ncoeffs, wavelength_mm, self.manufacturer, self.glass_out)
                 if abs(n_compute-default_n)>0.2:
                     print("n_compute",n_compute,default_n, self.manufacturer,self.glass_out)
                 return n_compute
@@ -638,7 +638,7 @@ def ray_gen2d(system, ax=None, z0=-1e9,num_rays=100,y_targets=[0,4,8,12,17,22],
             if not np.isnan(ray.current_point()[2]):
                 if ray.ps[1,1]>y_max:
                     y_max = ray.ps[1,1]
-                    if len(ray.ps)>22:
+                    if len(ray.ps)>22 and False:
                         print(f'y_max ray={y_max} ',ray.ps[22])
                 if ray.ps[1,1]<y_min:
                     y_min = ray.ps[1,1]

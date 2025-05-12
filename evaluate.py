@@ -10,31 +10,35 @@ from diffraction import *
 
 
 
-numray=30
+numray=100
 folder = 'samples'
 wls = ["g", "F", "e", "d", "C"]
 wl0 = "e"
 use_catalog=True
 focal_y=[-4,-8,-12,-17,-22]
 focal_y=[0,4,8,12,17,22]
-aperture_fac=0.95
+aperture_fac=0.99
+
+fl0 = 485
+fstop0 = 5.68
 #filename = folder+"/"+"apo130f7.7.txt"
 filename = '../lenspy/samples/Nikkor856eairdiam.txt' 
 #filename = '../lenspy/samples/Nikkor640eairdiam.txt' 
+filename = '../lenspy/samples/sigma556airdiam.txt' 
 optic_data = optictxt.parse_optical_file(filename,loc=0)
 
 optic_data = dict(list(optic_data.items())[:])
-print(optic_data)
+#print(optic_data)
 
 # Example usage:
 glassdata = 'glass/OHARA_20250312_6merge.csv'
 glassdata = 'glass/Optical Glass Lookup Table(Typecode Reference).csv'
 catalog = load_glass_catalog(glassdata)
-print('catalog loaded')
-print(catalog['manufacturer'][10:30])
-print(catalog['vd'])
+#print('catalog loaded')
+#print(catalog['manufacturer'][10:30])
+#print(catalog['vd'])
 #print('catalog\n',catalog.loc['S-NPH7']['a4'])
-print('glass params',catalog.iloc[1])
+#print('glass params',catalog.iloc[1])
 
 
 for label in catalog.index:
@@ -45,6 +49,12 @@ for label in catalog.index:
 
 if use_catalog:
     assign_glasses_to_lens_data(optic_data, catalog, N=3)
+    glass_list = []
+    for key in optic_data:
+        glass = optic_data[key]['glass']
+        if glass is not 'air' and glass is not None:
+            glass_list.append(glass)
+    print(glass_list)
 if not use_catalog:
     catalog = None
 
@@ -70,14 +80,6 @@ fig.patch.set_facecolor('black')  # Figure background
 fig.tight_layout()
 plt.show()
 
-
-weights = {
-    'g': 1.0,
-    'F': 1.1,
-    'e': 1.2,
-    'd': 1.1,
-    'C': 0.9
-}
 
 
 def build_system_and_trace(optical_data, catalog=None, wavelengths=wls, num_rays=20, raygen_kwargs=None, aperture=None):
@@ -251,8 +253,8 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
     surf0 = system.surfaces[0]
     center_kwargs = {'x0': x0, 'y0': y_targets[0], 'z0': z0}
     result_center = build_system_and_trace(optic_data, catalog=catalog,raygen_kwargs=center_kwargs, num_rays=num_rays)
-    rays_center = [ray for wl in result_center for ray in result_center[wl]]
-    #rays_center = result_center[wl0]
+    #rays_center = [ray for wl in result_center for ray in result_center[wl]]
+    rays_center = result_center[wl0]
     z_focus = find_focus(rays_center, radius=surf0.rad, plot=False, quick_focus=False)
     print(f"the focal plane is at {z_focus:.1f} mm")
     # Step 2: Try different y0 to match radius on focal plane
@@ -347,7 +349,7 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
 
             rays = result[raytype]
             raycolor = rays[0].color
-            print('raycolor', raycolor, raytype, 'wl',rays[0].wavelength)
+            #print('raycolor', raycolor, raytype, 'wl',rays[0].wavelength)
             result_points = [(ray.point_at_z(z_focus), ray.ps[1]) for ray in rays if ray.reach_z(z_focus)]
             points, points_at_front = zip(*result_points) if result_points else ([], [])
             #print('points',points)
@@ -357,8 +359,8 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
 
             eff_ap = coords_front.max(axis=0) - coords_front.min(axis=0)
 
-            fl=780
-            fstop = 5.658
+            fl=fl0
+            fstop = fstop0
             eff_ap *= fl/fstop/eff_ap.max(axis=0) # temp fix for aperture
             wl_ray = rays[0].wavelength
             #wl_ray = 548e-6
@@ -440,12 +442,15 @@ results = focal_plane_scan_render(optic_data, build_system_and_trace, find_focus
 #focal_plane_scan(optic_data, build_system_and_trace, find_focus, y_targets=[1,2,3,4,5], catalog=catalog, num_rays=numray,legend=True)
 
 
+from mtf import *
+weights = get_weights(wls, plot=True, d65_only=False)
+#weights = {'g': 0.0,'F': 0.0,'e': 0.1,'d': 0.0,'C': 0.00}
+print(weights)
 focal_y_mtf = [i*1.0 for i in range(23)]
 focal_y_mtf = np.arange(0,22.0001,2)
 
 print('y for mtf',focal_y_mtf)
 results = focal_plane_scan_render(optic_data, build_system_and_trace, find_focus, y_targets=focal_y_mtf, catalog=catalog, num_rays=numray,legend=False, plot=False)
-from mtf import *
 
 
 
@@ -462,6 +467,7 @@ s_limit = 20e-3  # 20 um field size
 pixel = s_limit / grid_size
 x = np.linspace(-s_limit/2, s_limit/2, grid_size)
 y = np.linspace(-s_limit/2, s_limit/2, grid_size)
+
 
 r_targets, mtf_x_vals, mtf_y_vals = analyze_mtf_across_field(
     results=results,

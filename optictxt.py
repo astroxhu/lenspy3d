@@ -97,9 +97,9 @@ def parse_optical_file(file_path,loc=0):
                 else:
                     d = float(parts[idx_d].replace('−', '-'))  # Replace Unicode minus sign
 
-                # For nd and νd, fill in with 1 and None respectively if they're not provided
+                # For nd and vd, fill in with 1 and None respectively if they're not provided
                 nd = float(parts[idx_nd].replace('−', '-')) if len(parts) > 3 else 1.0
-                νd = float(parts[idx_vd].replace('−', '-')) if len(parts) > 4 else None
+                vd = float(parts[idx_vd].replace('−', '-')) if len(parts) > 4 else None
                 if withdiam:
                     print('withdiam',idx_diam)
                     diam = float(parts[idx_diam].replace('−', '-'))
@@ -128,7 +128,7 @@ def parse_optical_file(file_path,loc=0):
 
             # Store in the dictionary
             print('stored surface No.:',surface_no)
-            optical_data[surface_no] = {'r': r, 'd': d, 'nd': nd, 'νd': νd, 'type': surface_type, 'conic': conic, 'parm': aspherical_parms, 'diam': diam, 'glass': glass}
+            optical_data[surface_no] = {'r': r, 'd': d, 'nd': nd, 'vd': vd, 'type': surface_type, 'conic': conic, 'parm': aspherical_parms, 'diam': diam, 'glass': glass}
             print(optical_data[surface_no]) 
             continue
 
@@ -156,8 +156,8 @@ def parse_optical_file(file_path,loc=0):
             idx_r = parts.index('r') + offset
             idx_d = parts.index('d') + offset
             idx_nd = parts.index('nd') + offset
-            if 'νd' in line:
-                idx_vd = parts.index('νd') + offset
+            if 'vd' in line:
+                idx_vd = parts.index('vd') + offset
             else:
                 idx_vd = parts.index('vd') + offset
 
