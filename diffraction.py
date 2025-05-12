@@ -1,24 +1,13 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.special import j1
-
-# Define the elliptical Airy pattern with optional pi factor
-def airy_pattern(x, y, airy_x=1, airy_y=1,x0=0,y0=0, I0=1.0):
-    r = np.sqrt(((x - x0)/ airy_x)**2 + ((y - y0) / airy_y)**2)
-    r *= np.pi
-    with np.errstate(divide='ignore', invalid='ignore'):
-        z = np.where(r == 0, I0, I0 * (2 * j1(r) / r)**2)
-    return z
-
-# Example convolve_dots function
-import numpy as np
-from scipy.special import j1
 from functools import partial
 
 # Airy pattern function
 def airy_pattern(x, y, airy_x=1, airy_y=1, x0=0, y0=0, I0=1.0):
     r = np.sqrt(((x - x0) / airy_x) ** 2 + ((y - y0) / airy_y) ** 2)
-    r *= np.pi
+    #r *= np.pi
+    r *= 3.8317
     with np.errstate(divide='ignore', invalid='ignore'):
         z = np.where(r == 0, I0, I0 * (2 * j1(r) / r) ** 2)
     return z

@@ -590,7 +590,12 @@ class AdditiveScatterCanvas:
                         yy = yi + i - r_pix - 1
                         if 0 <= xx < W and 0 <= yy < H:
                             img[yy, xx] += ci * mask[i, j]
-
+        #normalize img
+        v_max = img.max()
+        if v_max > 0:
+            img /= v_max  # Normalize to ensure no channel exceeds 1
+        print('max value', v_max) 
+        img*=8
         # Render final image
         self.ax.imshow(np.clip(img, 0, 1), extent=(*xlim, *ylim), origin='lower', interpolation='bilinear')
 
@@ -689,6 +694,61 @@ class AdditiveScatterCanvasSquare:
 
         # Render final image
         self.ax.imshow(np.clip(img, 0, 1), extent=(*xlim, *ylim), origin='lower', interpolation='bilinear')
+
+from scipy.ndimage import zoom
+class AdditivePSFCanvas:
+    def __init__(self, ax, canvas_size=None):
+        """
+        Initialize the additive PSF canvas.
+
+        Parameters:
+        - ax: matplotlib axis for rendering
+        - canvas_size: optional (W, H) in pixels. Defaults to current figure size.
+        """
+        self.ax = ax
+        fig = ax.figure
+
+        if canvas_size is None:
+            self.W, self.H = fig.canvas.get_width_height()
+        else:
+            self.W, self.H = canvas_size
+
+        self.canvas = np.zeros((self.H, self.W, 3), dtype=np.float32)
+
+    def add_array(self, psf_array, color, extent, normalize=True):
+        """
+        Add a 2D PSF array with RGB color blending.
+
+        Parameters:
+        - psf_array: 2D numpy array
+        - color: [R, G, B] list of floats
+        - extent: [x0, x1, y0, y1] range in data coordinates
+        - normalize: scale input array so its max is 1
+        """
+        if normalize:
+            psf_array = psf_array / np.max(psf_array)
+
+        # Resize PSF to match canvas
+        zoom_y = self.H / psf_array.shape[0]
+        zoom_x = self.W / psf_array.shape[1]
+        psf_resized = zoom(psf_array, (zoom_y, zoom_x), order=1)
+
+        # Add to canvas, scaling by color
+        for i in range(3):
+            self.canvas[:, :, i] += psf_resized * color[i]
+
+        self.last_extent = extent  # used for rendering later
+
+    def render(self):
+        """
+        Render the accumulated image to the axis.
+        """
+        # Normalize the final combined PSF array by dividing by the maximum value in any channel
+        v_max = self.canvas.max()
+        if v_max > 0:
+            self.canvas /= v_max  # Normalize to ensure no channel exceeds 1
+        extent = self.last_extent if hasattr(self, 'last_extent') else self.ax.get_xlim() + self.ax.get_ylim()
+        self.ax.imshow(self.canvas, extent=extent, origin='lower', interpolation='bilinear')
 
 
 

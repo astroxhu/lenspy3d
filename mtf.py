@@ -21,7 +21,7 @@ def compute_mtf(psf, pixel_size_mm=None, plot=False, radial=False):
     - mtf_x_interp, mtf_y_interp: functions to get interpolated MTF along X and Y directions at any frequency
     - radial_profile: 1D radial MTF profile (or None)
     """
-    psf = psf.astype(np.float32)
+    #psf = psf.astype(np.float32)
     psf /= psf.sum()  # Normalize energy
     
     # Compute MTF
@@ -91,6 +91,7 @@ def compute_mtf(psf, pixel_size_mm=None, plot=False, radial=False):
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
+from scipy.interpolate import CubicSpline
 
 def analyze_mtf_across_field(
     results,
@@ -99,6 +100,7 @@ def analyze_mtf_across_field(
     x, y,
     pixel,
     airy_radius_by_wl=None,
+    smooth = False,
     freq_samples=[10, 20, 40, 80, 160],
     convolver_fn=convolve_dots,
     clist=clist0,
@@ -110,7 +112,7 @@ def analyze_mtf_across_field(
 
     grid_size = len(x)
     r_targets = sorted([float(k) for k in results])
-    r_labels = [f"{r:.1f}" for r in r_targets]
+    r_labels = [f"{r:.2f}" for r in r_targets]
 
     mtf_x_at_freqs = {f: [] for f in freq_samples}
     mtf_y_at_freqs = {f: [] for f in freq_samples}
@@ -118,7 +120,7 @@ def analyze_mtf_across_field(
     for k_str in r_labels:
         print(f'Processing r = {k_str} mm')
         psf_total = np.zeros((grid_size, grid_size), dtype=float)
-
+        psf_dict = {}
         for wl in wls:
             coords = results[k_str]['points'][wl]
             xdots = coords[:, 0] - results[k_str]['xmean']
@@ -134,10 +136,16 @@ def analyze_mtf_across_field(
             psf_wl = convolver_fn(x, y, xdots, ydots,
                                   airy_x=airy_x, airy_y=airy_y,
                                   I0=1.0)
+            psf_dict[wl] = psf_wl
 
             psf_total += weights[wl] * psf_wl
 
         psf_total /= psf_total.sum()
+        
+        psf_dict['white'] = psf_total
+
+        # Store PSFs in results
+        results[k_str]['psf'] = psf_dict
 
         # Compute MTF
         mtf2d, fx, fy, mtf_x, mtf_y, mtf_x_interp, mtf_y_interp, _ = compute_mtf(
@@ -149,7 +157,7 @@ def analyze_mtf_across_field(
             mtf_y_at_freqs[f].append(mtf_y_interp(f))
 
     # Plotting
-    fig, ax = plt.subplots(figsize=(8, 5), facecolor=facecolor)
+    fig, ax = plt.subplots(figsize=(8, 5.5), facecolor=facecolor)
     ax.set_facecolor(facecolor)
     ax.tick_params(colors=tick_color)
     for spine in ax.spines.values():
@@ -172,16 +180,29 @@ def analyze_mtf_across_field(
         color = clist[idx % len(clist)]
 
         # Plot MTF-X (dot-dashed)
-        line_x, = ax.plot(r_targets, mtf_x_at_freqs[f], lw=lw, color=color, ls='-.')
-        handles.append(line_x)
-        labels.append(f'{f} lp/mm')
+        if smooth:
+            cs = CubicSpline(r_targets, mtf_x_at_freqs[f])
+            r_fine = np.linspace(0, max(r_targets), 1000)
+            mtf_x_fine = cs(r_fine)
+            line_x, = ax.plot(r_fine, mtf_x_fine, lw=lw, color=color, ls='-.')
+        else:
+            line_x, = ax.plot(r_targets, mtf_x_at_freqs[f], lw=lw, color=color, ls='-.')
 
         # Add "S" marker
         ax.text(r_targets[-1] + 0.5, mtf_x_at_freqs[f][-1], f"S{idx+1}", va='center', ha='left',
                 color=color, fontsize=8)
 
         # Plot MTF-Y (solid)
-        ax.plot(r_targets, mtf_y_at_freqs[f], lw=lw, color=color, ls='-', label=f'{f} lp/mm (X)')
+        if smooth:
+            cs = CubicSpline(r_targets, mtf_y_at_freqs[f])
+            r_fine = np.linspace(0, max(r_targets), 1000)
+            mtf_y_fine = cs(r_fine)
+            line_y, = ax.plot(r_fine, mtf_y_fine, lw=lw, color=color, ls='-')
+        else:
+            line_y, = ax.plot(r_targets, mtf_y_at_freqs[f], lw=lw, color=color, ls='-', label=f'{f} lp/mm (X)')
+
+        handles.append(line_y)
+        labels.append(f'{f} lp/mm')
             
         s_y = mtf_x_at_freqs[f][-1]
         t_y = mtf_y_at_freqs[f][-1]
@@ -205,9 +226,11 @@ def analyze_mtf_across_field(
         ax.text(r_targets[-1] + 0.5, t_y, f"T{idx+1}", va='center', ha='left',
                 color=color, fontsize=8)
     # Custom legend below the plot, only for MTF-X
-    leg = ax.legend(handles, labels, title="MTF-X Frequencies", title_fontsize=9,
-                    bbox_to_anchor=(0.5, -0.15), loc="upper center", ncol=3,
-                    framealpha=0.3, facecolor=facecolor)
+    leg = ax.legend(handles, labels, 
+                    #title="MTF-X Frequencies", title_fontsize=9,
+                    bbox_to_anchor=(0.5, -0.1), loc="upper center", ncol=5,
+                    framealpha=0.3, facecolor=facecolor, frameon=False)
+
     for text, line in zip(leg.get_texts(), handles):
         text.set_color(line.get_color())
 
@@ -216,3 +239,67 @@ def analyze_mtf_across_field(
 
     return r_targets, mtf_x_at_freqs, mtf_y_at_freqs
 
+def plot_results_psfs_grid(results, wls, weights, colors, extent=None, normalize=True):
+    """
+    Plots additive colored and white PSFs for multiple results[key] entries in 2x3 grids.
+
+    Parameters:
+    - results: dict with structure results[key]['psf'][wl] and ['psf_white']
+    - wls: list of wavelengths (e.g., ['g', 'F', 'e', 'd', 'C'])
+    - weights: dict mapping wl -> weight
+    - colors: dict mapping wl -> RGB color (e.g. [1,0,0] for red)
+    - extent: [x0, x1, y0, y1] for image coordinates (optional)
+    - normalize: whether to normalize each PSF before display
+    """
+    keys = sorted(results.keys(), key=lambda k: float(k))
+    N = len(keys)
+    if N > 6:
+        indices = np.round(np.linspace(0, N - 1, 6)).astype(int)
+        keys_to_plot = [keys[i] for i in indices]
+    else:
+        keys_to_plot = keys
+
+    fig_color, axs_color = plt.subplots(2, 3, figsize=(12, 8))
+    fig_white, axs_white = plt.subplots(2, 3, figsize=(12, 8))
+
+    axs_color = axs_color.flatten()
+    axs_white = axs_white.flatten()
+
+    for i, key in enumerate(keys_to_plot):
+        axc = axs_color[i]
+        axw = axs_white[i]
+
+        # --- Colored PSF ---
+        canvas = AdditivePSFCanvas(axc)
+        for wl in wls:
+            psf = results[key]['psf'][wl]
+            canvas.add_array(psf, color=colors[wl], extent=extent, normalize=normalize)
+        canvas.render()
+        axc.set_title(f'r = {key}')
+        #axc.set_xticks([])
+        #axc.set_yticks([])
+
+        # --- White PSF ---
+        psf_white = results[key]['psf']['white']
+        if normalize:
+            psf_white = psf_white / psf_white.max()
+        if extent is None:
+            h, w = psf_white.shape
+            extent = [-w/2, w/2, -h/2, h/2]  # fallback
+        axw.imshow(psf_white, cmap='gray', extent=extent, origin='lower')
+        axw.set_title(f'r = {key}')
+        #axw.set_xticks([])
+        #axw.set_yticks([])
+
+    # Hide unused subplots
+    for i in range(len(keys_to_plot), 6):
+        fig_color.delaxes(axs_color[i])
+        fig_white.delaxes(axs_white[i])
+
+    fig_color.suptitle("Additive Colored PSFs", color='white')
+    fig_white.suptitle("White PSFs", color='black')
+
+    fig_color.tight_layout()
+    fig_white.tight_layout()
+
+    return fig_color, fig_white

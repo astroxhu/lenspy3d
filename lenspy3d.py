@@ -44,18 +44,32 @@ _AIR_REFRACTIVE_INDEX = {
     768.2: 1.00026769,
 }
 
-n_air0 = 1+1e-4 #1.00027922
-#n_air0 = 1
+n_air0 = 1.00027922
+n_air0 = 1
 
 def n_air(wavelength_mm):
-    wl_nm = wavelength_mm * 1e6
-    known_wls = np.array(sorted(_AIR_REFRACTIVE_INDEX.keys()))
-    known_ns = np.array([_AIR_REFRACTIVE_INDEX[wl] for wl in known_wls])
-    if wl_nm < known_wls[0] or wl_nm > known_wls[-1]:
-        print(f"⚠️ Wavelength {wl_nm:.1f} nm is outside air index data range ({known_wls[0]}–{known_wls[-1]} nm). Using nearest value.")
-        wl_nm = np.clip(wl_nm, known_wls[0], known_wls[-1])
+    wl_um = wavelength_mm * 1e3
+    # Convert to inverse microns
+    sigma2 = (1 / wl_um)**2  # in μm⁻²
+
+    # Edlén 1966 / Ciddor approximation for standard air (dry, 15°C, 1013.25 hPa, 450 ppm CO2)
+    n_minus_1 = 1e-8 * (8342.13 + 2406030 / (130 - sigma2) + 15997 / (38.9 - sigma2))
+
     return n_air0
-    return np.interp(wl_nm, known_wls, known_ns)
+    return 1 + n_minus_1
+
+
+
+#def n_air(wavelength_mm):
+#    wl_nm = wavelength_mm * 1e6
+#    known_wls = np.array(sorted(_AIR_REFRACTIVE_INDEX.keys()))
+#    known_ns = np.array([_AIR_REFRACTIVE_INDEX[wl] for wl in known_wls])
+#    if wl_nm < known_wls[0] or wl_nm > known_wls[-1]:
+ #       print(f"⚠️ Wavelength {wl_nm:.1f} nm is outside air index data range ({known_wls[0]}–{known_wls[-1]} nm). Using nearest value.")
+#        wl_nm = np.clip(wl_nm, known_wls[0], known_wls[-1])
+#    return n_air0
+    #return np.interp(wl_nm, known_wls, known_ns)
+
 
 def get_surface_edge_z(surf, y):
     R = surf.R
@@ -122,7 +136,7 @@ class Ray3D:
         if isinstance(wavelength, str):
             if wavelength in FRAUNHOFER_WAVELENGTHS:
                 self.wavelength = FRAUNHOFER_WAVELENGTHS[wavelength] * 1e-6  # nm → mm
-                self.color = tuple(c / 255 for c in FRAUNHOFER_COLORS[wavelength])  # normalized RGB
+                self.color = tuple(c/255 for c in FRAUNHOFER_COLORS[wavelength])  # normalized RGB
             else:
                 raise ValueError(f"Unknown wavelength symbol: {wavelength}")
         elif isinstance(wavelength, (int, float)):
@@ -624,7 +638,8 @@ def ray_gen2d(system, ax=None, z0=-1e9,num_rays=100,y_targets=[0,4,8,12,17,22],
             if not np.isnan(ray.current_point()[2]):
                 if ray.ps[1,1]>y_max:
                     y_max = ray.ps[1,1]
-                    print(f'y_max ray={y_max} ',ray.ps[22])
+                    if len(ray.ps)>22:
+                        print(f'y_max ray={y_max} ',ray.ps[22])
                 if ray.ps[1,1]<y_min:
                     y_min = ray.ps[1,1]
 

@@ -12,16 +12,16 @@ from diffraction import *
 
 numray=30
 folder = 'samples'
-wls = ["e", "F", "e", "d", "C"]
+wls = ["g", "F", "e", "d", "C"]
 wl0 = "e"
 use_catalog=True
 focal_y=[-4,-8,-12,-17,-22]
-focal_y=[0, 4,8,12,17,22]
+focal_y=[0,4,8,12,17,22]
 aperture_fac=0.95
 #filename = folder+"/"+"apo130f7.7.txt"
 filename = '../lenspy/samples/Nikkor856eairdiam.txt' 
 #filename = '../lenspy/samples/Nikkor640eairdiam.txt' 
-optic_data = optictxt.parse_optical_file(filename)
+optic_data = optictxt.parse_optical_file(filename,loc=0)
 
 optic_data = dict(list(optic_data.items())[:])
 print(optic_data)
@@ -47,6 +47,12 @@ if use_catalog:
     assign_glasses_to_lens_data(optic_data, catalog, N=3)
 if not use_catalog:
     catalog = None
+
+FRAUNHOFER_COLORS_NORM = {
+    k: tuple(c / 255 for c in rgb)
+    for k, rgb in FRAUNHOFER_COLORS.items()
+}
+
 
 system = SurfaceSystem(optic_data, catalog=catalog)
 
@@ -241,13 +247,16 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
                      y_targets=[0, 4, 8, 12, 17, 22], x0=0, z0=-1e8, num_rays=500,plotsize=25, spotsize=30, plot=True, legend=False):
     #surf0 = optic_data
     # Step 1: Find focal plane using central ray
+    system = SurfaceSystem(optic_data, catalog = catalog)
+    surf0 = system.surfaces[0]
     center_kwargs = {'x0': x0, 'y0': y_targets[0], 'z0': z0}
     result_center = build_system_and_trace(optic_data, catalog=catalog,raygen_kwargs=center_kwargs, num_rays=num_rays)
-    rays_center = result_center[wl0]
-    z_focus = find_focus(rays_center, radius=65, plot=False, quick_focus=False)
+    rays_center = [ray for wl in result_center for ray in result_center[wl]]
+    #rays_center = result_center[wl0]
+    z_focus = find_focus(rays_center, radius=surf0.rad, plot=False, quick_focus=False)
     print(f"the focal plane is at {z_focus:.1f} mm")
     # Step 2: Try different y0 to match radius on focal plane
-    y0_candidates = np.linspace(0, 1.1*z0/z_focus*y_targets[-1], 50)  # mm
+    y0_candidates = np.linspace(0, 1.1*z0/z_focus*y_targets[-1], 10*len(y_targets))  # mm
     r_targets = abs(np.array(y_targets))
     matched_y0s = []
 
@@ -256,14 +265,21 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
         min_err = np.inf
         for y0_try in y0_candidates:
             try_kwargs = {'x0': x0, 'y0': y0_try, 'z0': z0}
-            result = build_system_and_trace(optic_data, catalog=catalog, raygen_kwargs=try_kwargs, num_rays=1,aperture=0.1)
-            rays = result[wl0]
+            ps0 =[x0, y0_try, z0]
+            y_apert = -y0_try/z0*surf0.rad/1.5
+            direc0 = [0-x0, y_apert-y0_try, 0-z0]
+            #result = build_system_and_trace(optic_data, catalog=catalog, raygen_kwargs=try_kwargs, num_rays=1,aperture=0.1)
+            rays = [Ray3D(ps0, direc0, color='C0', wavelength=wl0, n0=n_air0)]
+            system.trace(rays)
+            #rays = result[wl0]
             points = [ray.point_at_z(z_focus) for ray in rays if ray.reach_z(z_focus)]
-            if not points:
+            #points = ray.point_at_z(z_focus)
+            if not len(points)>0:
                 continue
             coords = np.array(points)
-            rs = np.sqrt(coords[:, 0]**2 + coords[:, 1]**2)
-            median_r = np.median(rs)
+            #rs = np.sqrt(coords[:, 0]**2 + coords[:, 1]**2)
+            #median_r = np.median(rs)
+            median_r =np.sqrt(coords[:,0]**2 + coords[:,1]**2)
             err = abs(median_r - r)
             if err < min_err:
                 best_y0 = y0_try
@@ -341,8 +357,13 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
 
             eff_ap = coords_front.max(axis=0) - coords_front.min(axis=0)
 
-            airy_x = 1.22*rays[0].wavelength/eff_ap[0]*788.
-            airy_y = 1.22*rays[0].wavelength/eff_ap[1]*788.
+            fl=780
+            fstop = 5.658
+            eff_ap *= fl/fstop/eff_ap.max(axis=0) # temp fix for aperture
+            wl_ray = rays[0].wavelength
+            #wl_ray = 548e-6
+            airy_x = 1.22*wl_ray/eff_ap[0]*fl
+            airy_y = 1.22*wl_ray/eff_ap[1]*fl
 
             airy_by_type[raytype] = [airy_x,airy_y]
 
@@ -352,7 +373,7 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
         #ax.set_title(f"r ≈ {r_target} mm\ny0 = {y0_val/1e6:.2f} Mm")
         
 
-        results_dict[f"{r_target:.1f}"] = {
+        results_dict[f"{r_target:.2f}"] = {
             'r': r_target,
             'y0_val': y0_val,
             'xmean': xmean,
@@ -419,12 +440,13 @@ results = focal_plane_scan_render(optic_data, build_system_and_trace, find_focus
 #focal_plane_scan(optic_data, build_system_and_trace, find_focus, y_targets=[1,2,3,4,5], catalog=catalog, num_rays=numray,legend=True)
 
 
+focal_y_mtf = [i*1.0 for i in range(23)]
+focal_y_mtf = np.arange(0,22.0001,2)
+
+print('y for mtf',focal_y_mtf)
+results = focal_plane_scan_render(optic_data, build_system_and_trace, find_focus, y_targets=focal_y_mtf, catalog=catalog, num_rays=numray,legend=False, plot=False)
 from mtf import *
 
-
-# Interpolate MTF at 100 cycles/mm for X and Y directions
-print("MTF at 100 cycles/mm (X):", mtf_x_interp(100))
-print("MTF at 100 cycles/mm (Y):", mtf_y_interp(100))
 
 
 airy_radius_by_wl = {
@@ -435,15 +457,32 @@ airy_radius_by_wl = {
     'C': 4.0e-3
 }
 
+grid_size = 100
+s_limit = 20e-3  # 20 um field size
+pixel = s_limit / grid_size
+x = np.linspace(-s_limit/2, s_limit/2, grid_size)
+y = np.linspace(-s_limit/2, s_limit/2, grid_size)
+
 r_targets, mtf_x_vals, mtf_y_vals = analyze_mtf_across_field(
     results=results,
     wls=wls,
     weights=weights,
-    airy_radius_by_wl=airy_radius_by_wl,
     x=x, y=y,
     pixel=pixel,
+    smooth = True,
+    #airy_radius_by_wl=airy_radius_by_wl,
     freq_samples=[10, 20, 40, 80, 160],  # lp/mm
     convolver_fn=convolve_dots  # You can swap with convolve_dots_subpixel
+)
+
+
+plot_results_psfs_grid(
+    results=results,
+    wls=['g', 'F', 'e', 'd', 'C'],
+    weights=weights,
+    colors=FRAUNHOFER_COLORS_NORM,
+    extent=np.array([-s_limit, s_limit, -s_limit, s_limit])*1e3,
+    normalize=True
 )
 
 
