@@ -1,51 +1,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
+from constants import *
 from getglass import *
 from plottools import *
+from diffraction import *
+from mtf import *
 
-FRAUNHOFER_WAVELENGTHS = {
-    'h': 404.7,
-    'g': 435.8,
-    "F'": 434.1,
-    'F': 486.1,
-    'e': 546.1,
-    'd': 587.6,
-    'D': 589.3,
-    "C'": 656.3,
-    'C': 656.3,
-    'r': 768.2,
-}
-
-FRAUNHOFER_COLORS = {
-    'h': (96, 0, 255),      # violet
-    #'g': (60, 80, 255),     # deep blue
-    'g': (80, 0, 255),     # violet
-    "F'": (65, 100, 255),   # blue
-    'F': (80, 180, 255),    # cyan-blue
-    'e': (0, 255, 40),       # green
-    'd': (240, 200, 40),     # golden yellow
-    'D': (255, 180, 0),     # yellow
-    "C'": (255, 0, 50),      # red
-    'C': (255, 0, 0),       # red
-    'r': (128, 0, 0),       # deep red (near IR)
-}
-
-
-_AIR_REFRACTIVE_INDEX = {
-    404.7: 1.00029307,
-    434.1: 1.00028958,
-    435.8: 1.00028941,
-    486.1: 1.00028438,
-    546.1: 1.00027922,
-    587.6: 1.00027717,
-    589.3: 1.00027707,
-    656.3: 1.00027225,
-    768.2: 1.00026769,
-}
-
-n_air0 = 1.00027922
-n_air0 = 1
 
 def n_air(wavelength_mm):
     wl_um = wavelength_mm * 1e3
@@ -245,7 +206,7 @@ class SphericalSurface:
         self.debug = debug
 
     def get_refractive_indices(self, wavelength_mm):
-        """Return (n_in, n_out) at given wavelength (in nm), using the Sellmeier catalog if available."""
+        """Return (n_in, n_out) at given wavelength (in mm), using the Sellmeier catalog if available."""
 
         def is_air(glass_name, default_n):
             return (glass_name is None or glass_name.lower() == 'air' or abs(default_n - 1.0) < 5e-4)
@@ -439,7 +400,7 @@ class SurfaceSystem:
 
 
     def trace(self, rays):
-        for surface in self.surfaces:
+        for i_surf, surface in enumerate(self.surfaces):
             updated_rays = []
             for ray in rays:
                 if np.isnan(ray.current_point()[2]):
@@ -456,7 +417,10 @@ class SurfaceSystem:
                 # Use catalog to resolve actual indices for this wavelength
                 if self.catalog is not None:
                     n1 = ray.current_n()
+                    if i_surf == 0: # first surface
+                        n1 = n_air(ray.wavelength)
                     n2 = surface.get_refractive_indices(ray.wavelength) ## will need to fix n1 
+
                     #print('wl', ray.wavelength, 'n1',n1,'n2',n2)
                 else:
                     n1 = surface.default_n_in
@@ -915,7 +879,180 @@ def spread_at_z(z, rays, metric='rms', center='median', **kwargs):
     else:
         raise ValueError("Metric must be 'rms', 'std', or 'hist'")    
 
-def find_focus(rays, radius, num_samples=20, metric='rms', plot=False, quick_focus=False, method='grid', center='median', **kwargs):
+def white_light_psf(
+    result_at_z,
+    wls,
+    weights,
+    x, y,
+    airy_radius_by_wl=None,
+    convolver_fn=convolve_dots,
+):
+    """
+    Render the white-light PSF from precomputed ray results at a specific focal plane z.
+
+    Parameters
+    ----------
+    result_at_z : dict
+        Dictionary like results[k_str] from your ray trace output at a given z.
+    wls : list of float
+        List of wavelengths in nm.
+    weights : dict[float, float]
+        Dict of wavelength weights (e.g. {550: 1.0, 480: 0.6, ...}).
+    x, y : ndarray
+        1D arrays representing the PSF grid.
+    airy_radius_by_wl : dict[float, float] or None
+        If provided, uses this for Airy disk size instead of what's in result_at_z['airy'].
+    convolver_fn : callable
+        Function to convolve dot cloud into PSF.
+
+    Returns
+    -------
+    psf_total : 2D ndarray
+        Normalized white-light PSF on the grid.
+    psf_dict : dict[float|str, 2D ndarray]
+        Individual PSFs per wavelength, and `'white'` for total.
+    """
+    grid_size = len(x)
+    psf_total = np.zeros((grid_size, grid_size), dtype=float)
+    psf_dict = {}
+
+    for wl in wls:
+        coords = result_at_z['points'][wl]
+        xdots = coords[:, 0] - result_at_z['xmean']
+        ydots = coords[:, 1] - result_at_z['ymean']
+
+        if airy_radius_by_wl:
+            airy_x = airy_radius_by_wl[wl]
+            airy_y = airy_radius_by_wl[wl]
+        else:
+            airy_x = result_at_z['airy'][wl][0]
+            airy_y = result_at_z['airy'][wl][1]
+
+        psf_wl = convolver_fn(x, y, xdots, ydots, airy_x=airy_x, airy_y=airy_y, I0=1.0)
+        psf_dict[wl] = psf_wl
+        psf_total += weights[wl] * psf_wl
+
+    psf_total /= psf_total.sum()
+    psf_dict['white'] = psf_total
+    return psf_total, psf_dict
+
+
+
+def find_focus_psf(raysdict, radius, z_init=None, xgrid=None, weights=None, num_samples=31, metric = 'mtf', method = 'grid', plot=True, quick_focus=False, freq_m=160):
+    
+    wls = raysdict.keys()
+    n_wl = len(wls)
+    if 'e' in wls:
+        wle = 'e'
+    else:
+        wle = wls[0]
+    rays = raysdict[wle]
+
+    if z_init is None:
+        z_init = find_focus(rays,radius)
+
+    z_min = z_init * 0.9998
+    z_max = z_init * 1.0002
+
+    if not xgrid:
+        xgrid = np.linspace(-20e-3,20e-3,101)
+    ygrid = xgrid
+    pixel = xgrid[1]-xgrid[0]
+    if not weights:
+        weights = [1.]*n_wl
+
+    if method == 'grid':
+        z_values = np.linspace(z_min, z_max, num_samples)
+        metrics = []
+        for z in z_values:
+            points_by_wl = {}
+            airy_by_wl = {}
+            for wl in wls:
+                rays = raysdict[wl]
+                raycolor = rays[0].color
+                result_points = [(ray.point_at_z(z), ray.ps[1]) for ray in rays if ray.reach_z(z)]
+                points, points_at_front = zip(*result_points) if result_points else ([], [])
+                #print('points',points)
+                coords = np.array(points)
+                coords_front = np.array(points_at_front)
+ 
+                points_by_wl[wl] = coords
+
+                eff_ap = coords_front.max(axis=0) - coords_front.min(axis=0)
+
+                fl=780 #fl0
+                fstop = 5.68 #fstop0
+
+                eff_ap *= fl/fstop/eff_ap.max(axis=0) # temp fix for aperture
+                wl_ray = rays[0].wavelength
+                #wl_ray = 548e-6
+                airy_x = 1.22*wl_ray/eff_ap[0]*fl
+                airy_y = 1.22*wl_ray/eff_ap[1]*fl
+
+                airy_by_wl[wl] = [airy_x,airy_y]
+            
+            xmean = np.mean(points_by_wl[wle][:,0])
+            ymean = np.mean(points_by_wl[wle][:,1])
+
+            result_at_z = {
+                "points":points_by_wl,
+                "xmean": xmean,
+                "ymean": ymean,
+                'airy':airy_by_wl,
+            }
+
+            psf_total, _ = white_light_psf(
+                result_at_z, wls, weights, xgrid, ygrid,
+                airy_radius_by_wl=None,
+                convolver_fn=convolve_dots,
+            )
+
+            #fig,ax = plt.subplots()
+            #ax.imshow(psf_total)
+            #ax.set_title(f"z={z}")
+            #plt.show()
+            if metric == 'mtf':
+                mtf2d, fx, fy, mtf_x, mtf_y, mtf_x_interp, mtf_y_interp, _ = compute_mtf(
+                    psf_total, pixel_size_mm=pixel, plot=False
+                )
+            
+                metrics.append(mtf_x_interp(freq_m))
+        z_best = z_values[np.argmax(metrics)]
+
+        if plot:
+            plt.figure(figsize=(6, 4))
+            plt.plot(z_values, metrics, 'o-', label='Initial Search')
+            #plt.plot(z_values_3, metrics_3, 'x-', label='Refined Search')
+            plt.axvline(z_init, color='b', linestyle='--', label=f'Init Focus: z={z_init:.3f}')
+            plt.axvline(z_best, color='g', linestyle='--', label=f'Best Focus: z={z_best:.3f}')
+            #plt.axvline(z_best_3, color='r', linestyle='--', label=f'Best Focus: z={z_best_3:.3f}')
+            plt.xlabel('z (focal plane)')
+            plt.ylabel(f'{metric.upper()} Spread')
+            plt.title('Focus Search')
+            plt.legend()
+            plt.grid(True)
+            plt.tight_layout()
+            plt.show()
+
+        return z_best #, metrics_refined, z_values_refined
+
+
+
+            
+
+def find_focus(rays0, radius, num_samples=21, metric='rms', plot=False, quick_focus=False, method='grid', center='median', **kwargs):
+    if isinstance(rays0, dict):
+        raysdict=rays0
+        wls = raysdict.keys()
+        if 'e' in wls:
+            wle = 'e'
+        else:
+            wle = wls[0]
+        rays = raysdict[wle]
+        
+    else:
+        rays = rays0
+
     for ray in rays:
         if abs(ray.ps[1,0]-radius*0.8)<radius*0.1:
             ray1=ray

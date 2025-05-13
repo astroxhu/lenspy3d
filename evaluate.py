@@ -1,10 +1,13 @@
 import matplotlib.pyplot as plt
 import numpy as np
+from constants import *
 import optictxt
+
 from lenspy3d import *
 from getglass import *
 from plottools import *
 from diffraction import *
+from mtf import *
 #digtype=np.float64
 
 
@@ -19,12 +22,12 @@ focal_y=[-4,-8,-12,-17,-22]
 focal_y=[0,4,8,12,17,22]
 aperture_fac=0.99
 
-fl0 = 485
+fl0 = 780
 fstop0 = 5.68
 #filename = folder+"/"+"apo130f7.7.txt"
 filename = '../lenspy/samples/Nikkor856eairdiam.txt' 
 #filename = '../lenspy/samples/Nikkor640eairdiam.txt' 
-filename = '../lenspy/samples/sigma556airdiam.txt' 
+#filename = '../lenspy/samples/sigma556airdiam.txt' 
 optic_data = optictxt.parse_optical_file(filename,loc=0)
 
 optic_data = dict(list(optic_data.items())[:])
@@ -52,7 +55,7 @@ if use_catalog:
     glass_list = []
     for key in optic_data:
         glass = optic_data[key]['glass']
-        if glass is not 'air' and glass is not None:
+        if glass != 'air' and glass != None:
             glass_list.append(glass)
     print(glass_list)
 if not use_catalog:
@@ -62,6 +65,11 @@ FRAUNHOFER_COLORS_NORM = {
     k: tuple(c / 255 for c in rgb)
     for k, rgb in FRAUNHOFER_COLORS.items()
 }
+
+
+weights = get_weights(wls, plot=True, d65_only=False)
+#weights = {'g': 0.0,'F': 0.0,'e': 0.1,'d': 0.0,'C': 0.00}
+print(weights)
 
 
 system = SurfaceSystem(optic_data, catalog=catalog)
@@ -256,6 +264,9 @@ def focal_plane_scan_render(optic_data, build_system_and_trace, find_focus,catal
     #rays_center = [ray for wl in result_center for ray in result_center[wl]]
     rays_center = result_center[wl0]
     z_focus = find_focus(rays_center, radius=surf0.rad, plot=False, quick_focus=False)
+    z_focus = find_focus_psf(result_center, radius=surf0.rad, z_init=z_focus, xgrid=None, 
+        weights = weights
+        )
     print(f"the focal plane is at {z_focus:.1f} mm")
     # Step 2: Try different y0 to match radius on focal plane
     y0_candidates = np.linspace(0, 1.1*z0/z_focus*y_targets[-1], 10*len(y_targets))  # mm
@@ -442,15 +453,11 @@ results = focal_plane_scan_render(optic_data, build_system_and_trace, find_focus
 #focal_plane_scan(optic_data, build_system_and_trace, find_focus, y_targets=[1,2,3,4,5], catalog=catalog, num_rays=numray,legend=True)
 
 
-from mtf import *
-weights = get_weights(wls, plot=True, d65_only=False)
-#weights = {'g': 0.0,'F': 0.0,'e': 0.1,'d': 0.0,'C': 0.00}
-print(weights)
 focal_y_mtf = [i*1.0 for i in range(23)]
 focal_y_mtf = np.arange(0,22.0001,2)
 
 print('y for mtf',focal_y_mtf)
-results = focal_plane_scan_render(optic_data, build_system_and_trace, find_focus, y_targets=focal_y_mtf, catalog=catalog, num_rays=numray,legend=False, plot=False)
+#results = focal_plane_scan_render(optic_data, build_system_and_trace, find_focus, y_targets=focal_y_mtf, catalog=catalog, num_rays=numray,legend=False, plot=False)
 
 
 

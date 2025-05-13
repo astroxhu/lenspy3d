@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
+from constants import *
 from diffraction import *
 from plottools import *
 from lenspy3d import *
