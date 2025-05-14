@@ -18,6 +18,7 @@ folder = 'samples'
 wls = ["g", "F", "e", "d", "C"]
 wl0 = "e"
 use_catalog=True
+z0_demo = -1e8
 focal_y=[-4,-8,-12,-17,-22]
 focal_y=[0,4,8,12,17,22]
 aperture_fac=0.99
@@ -27,7 +28,9 @@ fstop0 = 5.68
 #filename = folder+"/"+"apo130f7.7.txt"
 filename = '../lenspy/samples/Nikkor856eairdiam.txt' 
 #filename = '../lenspy/samples/Nikkor640eairdiam.txt' 
-#filename = '../lenspy/samples/sigma556airdiam.txt' 
+filename = '../lenspy/samples/sigma556airdiam.txt' 
+
+
 optic_data = optictxt.parse_optical_file(filename,loc=0)
 
 optic_data = dict(list(optic_data.items())[:])
@@ -67,7 +70,7 @@ FRAUNHOFER_COLORS_NORM = {
 }
 
 
-weights = get_weights(wls, plot=True, d65_only=False)
+weights = get_weights(wls, plot=False, d65_only=False)
 #weights = {'g': 0.0,'F': 0.0,'e': 0.1,'d': 0.0,'C': 0.00}
 print(weights)
 
@@ -77,8 +80,8 @@ system = SurfaceSystem(optic_data, catalog=catalog)
 fig = plt.figure(figsize=(15,6),dpi=117)
 ax = plt.subplot(111)
 
-_, z_focus = ray_gen2d(system, ax)
-system.draw_lens(ax, z_focus=z_focus)
+_, z_focus, focal_length = ray_gen2d(system, ax, z0=z0_demo, y_targets=[22])
+system.draw_lens(ax, z_focus=z_focus, focal_length = focal_length)
 
 ax.axis('off')  # Removes everything: ticks, labels, frame
 

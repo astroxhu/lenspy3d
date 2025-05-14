@@ -8,6 +8,11 @@ from diffraction import *
 from mtf import *
 
 
+DTYPE = np.float64  # or np.float64 for speed/compatibility
+
+def vec(x):
+    return np.array(x, dtype=DTYPE) if np.ndim(x) > 0 else DTYPE(x)
+
 def n_air(wavelength_mm):
     wl_um = wavelength_mm * 1e3
     # Convert to inverse microns
@@ -17,7 +22,7 @@ def n_air(wavelength_mm):
     n_minus_1 = 1e-8 * (8342.13 + 2406030 / (130 - sigma2) + 15997 / (38.9 - sigma2))
 
     return n_air0
-    return 1 + n_minus_1
+    #return 1 + n_minus_1
 
 
 
@@ -279,21 +284,37 @@ class SphericalSurface:
                     print('outside flat',hit,np.linalg.norm(hit[:2] - np.array([self.x0, self.y0])),self.rad)
                 return [np.nan,np.nan,np.nan]
             return hit
+        
+        p0 = vec(p0)
 
-        oc = p0 - self.center
+        d = vec(d)
+
+        oc = p0 - vec(self.center)
         a = np.dot(d, d)
         b = 2.0 * np.dot(oc, d)
-        c = np.dot(oc, oc) - self.R**2
+        norm_oc = np.linalg.norm(oc)
+        #c = np.dot(oc, oc) - self.R**2
+        c = (norm_oc + self.R) * (norm_oc - self.R)
         discriminant = b**2 - 4*a*c
         if discriminant < 0:
             if self.debug:
                 print('outside sphere', oc, self.R)
             return [np.nan,np.nan,np.nan]
         sqrt_disc = np.sqrt(discriminant)
-        t0 = (-b - sqrt_disc) / (2*a)
-        t1 = (-b + sqrt_disc) / (2*a)
-        t = t0 if t0 > 0 else t1
-        if t < 0:
+        qq = -0.5 * (b + np.copysign(sqrt_disc, b)) # more numerically stable
+        
+        #t1 = (-b - sqrt_disc) / 2
+        #t2 = (-b + sqrt_disc) / 2
+        #print(f'old t0={t0}, t1={t1}')
+        t1 = qq / a
+        t2 = c / qq
+        #print(f'stab t0={t0}, t1={t1}')
+        
+        # Choose the smallest positive t
+        t = min(t for t in (t1, t2) if t >= 0) if any(t >= 0 for t in (t1, t2)) else None
+        #t = t1 if t1 > 0 else t2
+        #if t < 0:
+        if t is None:
             if self.debug:
                 print('intersect backward',t)
             return [np.nan,np.nan,np.nan]
@@ -303,6 +324,7 @@ class SphericalSurface:
             if self.debug:
                 print('outside aperture', hit, r, self.rad)
             return [np.nan,np.nan,np.nan]
+        #print('intersect',hit, p0,d, self.center, self.R)
         return hit
 
     def normal(self, pt):
@@ -311,13 +333,36 @@ class SphericalSurface:
         else:
             return (pt - self.center) / np.linalg.norm(pt - self.center)*np.sign(self.R)
 
-    def refract(self, d_in, normal, n1, n2):
+    def refractold(self, d_in, normal, n1, n2):
         cos_i = -np.dot(normal, d_in)
         sin2_t = (n1/n2)**2 * (1 - cos_i**2)
         if sin2_t > 1.0:
             return [np.nan,np.nan,np.nan]
         cos_t = np.sqrt(1 - sin2_t)
         return (n1/n2) * d_in + (n1/n2 * cos_i - cos_t) * normal
+
+    def refract(self, d_in, normal, n1, n2, eps=1e-12):
+        #d_in = vec(d_in)
+        normal = vec(normal)
+
+        d_in = d_in / np.linalg.norm(d_in)
+        normal = normal / np.linalg.norm(normal)
+
+        cos_i = -np.dot(normal, d_in)
+        cos_i = np.clip(cos_i, -1.0, 1.0)  # numerical safety
+
+        eta = n1 / n2
+        sin2_t = eta**2 * max(0.0, 1.0 - cos_i**2)  # ensure non-negative
+
+        if sin2_t > 1.0 + eps:
+            return None  # total internal reflection
+        sin2_t = min(sin2_t, 1.0)  # clamp overshoot
+
+        cos_t2 = 1.0 - sin2_t
+        cos_t = np.sqrt(max(0.0, cos_t2))  # safe sqrt
+
+        return eta * d_in + (eta * cos_i - cos_t) * normal
+
 
 class SurfaceSystem:
     def __init__(self, optical_data_list, catalog=None, n_keys=["ng", "nF", "ne", "nd", "nC"], debug=False):
@@ -356,6 +401,7 @@ class SurfaceSystem:
                 formula = None
                 ncoeffs = None
                 manufacturer = None
+                n_dict = None
 
             surf = SphericalSurface(
                 R=data['r'],
@@ -407,6 +453,7 @@ class SurfaceSystem:
                     continue
 
                 pt = surface.intersect(ray.current_point(), ray.direc)
+                #print(f'current point:{ray.current_point()}, direc:{ray.direc}')
                 ray.add_point(pt)
                 if np.isnan(pt[2]):
                     if self.debug:
@@ -426,8 +473,11 @@ class SurfaceSystem:
                     n1 = surface.default_n_in
                     n2 = surface.default_n_out
                     #print('default', 'n1',n1,'n2',n2)
+
                 
+                 
                 T = surface.refract(ray.direc, N, n1, n2)
+                #print(f'new pt={pt}, new direc={T}, n1={n1},n2={n2}')
                 if T is None:
                     print('T',T)
                     continue
@@ -437,7 +487,7 @@ class SurfaceSystem:
             rays = updated_rays
         return rays
 
-    def draw_lens(self, ax=None,axcolor='k',color='w',lw=0.8, diaphragm_size=8, z_focus=None, r_focus=22):
+    def draw_lens(self, ax=None,axcolor='k',color='w',lw=0.8, diaphragm_size=8, z_focus=None, r_focus=22, focal_length=None):
         if ax is None:
             fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -503,12 +553,14 @@ class SurfaceSystem:
         if z_focus:
             ax.plot([z_focus, z_focus], [-r_focus, r_focus], color, lw=lw)
             draw_scale(ax,start=0,end=z_focus, position = -y_max*1.1, color=color)
-
-        ax.set_title("Lens System Layout")
+        title = "Lens System Layout"
+        if focal_length is not None:
+            title += f", fl={focal_length:.2f}"
+        ax.set_title(title, color=color)
         #ax.grid(True)
         return ax
 
-def ray_gen(x0=0, y0=0, z0=-1e10, num_rays=50, R1=1.0, z1=0.0, aperture=10.0, random=True,n0=n_air0):
+def ray_genold(x0=0, y0=0, z0=-1e10, num_rays=50, R1=1.0, z1=0.0, aperture=10.0, random=True,n0=n_air0, collimated=False):
     rays = []
     aperture_radius = aperture / 2.0
     if random:
@@ -538,12 +590,86 @@ def ray_gen(x0=0, y0=0, z0=-1e10, num_rays=50, R1=1.0, z1=0.0, aperture=10.0, ra
                 rays.append(ray)
     return rays
 
+def ray_gen(
+    x0=0, y0=0, z0=-1e10,
+    num_rays=50,
+    R1=1.0, x1=0, y1=0,z1=0.0,
+    aperture=10.0,
+    random=True,
+    n0=n_air0,
+    normalize=True,
+    collimated=False
+):
+    rays = []
+    aperture_radius = aperture / 2.0
+
+    # For collimated mode, precompute common direction
+    if collimated:
+        dx = x1 - x0
+        dy = y1 - y0
+        dz = z1 - z0
+        if normalize:
+            norm = np.sqrt(dx**2 + dy**2 + dz**2)
+            dx, dy, dz = dx / norm, dy / norm, dz / norm
+        common_dir = (dx, dy, dz)
+
+    if random:
+        for _ in range(num_rays):
+            r = aperture_radius * np.sqrt(np.random.rand())
+            theta = 2 * np.pi * np.random.rand()
+            x = r * np.cos(theta)
+            y = r * np.sin(theta)
+
+            if collimated:
+                direction = common_dir
+                origin = (x+x0, y+y0, z0)
+            else:
+                dx = x - x0
+                dy = y - y0
+                dz = z1 - z0
+                origin = (x0, y0, z0)
+                if normalize:
+                    norm = np.sqrt(dx**2 + dy**2 + dz**2)
+                    dx, dy, dz = dx / norm, dy / norm, dz / norm
+                direction = (dx, dy, dz)
+
+            ray = Ray3D(origin, direction, n0=n0)
+            rays.append(ray)
+
+    else:
+        num_rings = int(np.sqrt(num_rays))
+        for i in range(num_rings):
+            r = aperture_radius * (i + 1) / num_rings
+            num_points = max(int(2 * np.pi * r / (aperture / num_rings)), 1)
+            for j in range(num_points):
+                theta = 2 * np.pi * j / num_points
+                x = r * np.cos(theta)
+                y = r * np.sin(theta)
+
+                if collimated:
+                    direction = common_dir
+                    origin = (x+x0, y+y0, z0)
+                    
+                else:
+                    dx = x - x0
+                    dy = y - y0
+                    dz = z1 - z0
+                    origin = (x0, y0, z0)
+                    if normalize:
+                        norm = np.sqrt(dx**2 + dy**2 + dz**2)
+                        dx, dy, dz = dx / norm, dy / norm, dz / norm
+                    direction = (dx, dy, dz)
+
+                ray = Ray3D(origin, direction, n0=n0)
+                rays.append(ray)
+
+    return rays
 
 
-def ray_gen2d(system, ax=None, z0=-1e9,num_rays=100,y_targets=[0,4,8,12,17,22],
+def ray_gen2d(system, ax=None, z0=-1e8,num_rays=100,y_targets=[0,4,8,12,17,22],
     #clist=['C0','C1','C2','C3','C4','C5'],
     clist=clist0,
-    lw=1):
+    lw=1, collimated = False):
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -554,23 +680,36 @@ def ray_gen2d(system, ax=None, z0=-1e9,num_rays=100,y_targets=[0,4,8,12,17,22],
     rad0=system.surfaces[0].rad
     #center_kwargs = {'x0': x0, 'y0': 0, 'z0': -1e10}
     x0 = 0.
-    rays = ray_gen(x0=0, y0=0, z0=z0, num_rays=num_rays,aperture=rad0/1.5*2)
+    if abs(z0)>1e6:
+        collimated = True
+        #x0 = x0*1e3/z0
+        #y0 = y0*1e3/z0
+        z0 = -1e3
+        
+    rays = ray_gen(x0=0, y0=0, z0=z0, num_rays=num_rays,aperture=rad0/1.5*2, collimated=collimated)
     rays_center = system.trace(rays)
     z_focus = find_focus(rays_center, radius=rad0, plot=False, quick_focus=False)
+    print(f'z_focus={z_focus}')
+    system.add_surface(R=np.inf, z0=z_focus, diam = 2*abs(y_targets[-1])+0.1, n_out=100)
     
-    y0_candidates = np.linspace(0, 1.1*z0/z_focus*y_targets[-1], 50)  # mm
+    y0_candidates = np.linspace(0, 1.3*z0/z_focus*y_targets[-1], 50)  # mm
     r_targets = abs(np.array(y_targets))
     matched_y0s = []
-
+    print(f'y0_candidate_min,max={max(y0_candidates), min(y0_candidates)}')
     for r in r_targets:
         best_y0 = None
         min_err = np.inf
         for y0_try in y0_candidates:
             #try_kwargs = {'x0': x0, 'y0': y0_try, 'z0': z0}
-            rays = ray_gen(x0=0, y0=y0_try, z0=z0, num_rays=1,aperture=rad0/10)
+            ps0 =[x0, y0_try, z0]
+            y_apert = -y0_try/z0*rad0/1.5
+            direc0 = [0-x0, y_apert-y0_try, 0-z0]
+
+            rays = [Ray3D(ps0, direc0, color='C0', n0=n_air0)]
+            #rays = ray_gen(x0=0, y0=y0_try, z0=z0, num_rays=1,aperture=rad0/10)
             rays = system.trace(rays)
             points = [ray.point_at_z(z_focus) for ray in rays if ray.reach_z(z_focus)]
-            if not points:
+            if not points or np.isnan(rays[0].current_point()[2]):
                 continue
             coords = np.array(points)
             rs = np.sqrt(coords[:, 0]**2 + coords[:, 1]**2)
@@ -583,7 +722,7 @@ def ray_gen2d(system, ax=None, z0=-1e9,num_rays=100,y_targets=[0,4,8,12,17,22],
             matched_y0s.append(best_y0)
         else:
             matched_y0s.append(np.nan)
-
+    print(f"matched_y0s={matched_y0s}")
     y_range_list=[]
     for y0 in matched_y0s:
         rays = []
@@ -593,17 +732,24 @@ def ray_gen2d(system, ax=None, z0=-1e9,num_rays=100,y_targets=[0,4,8,12,17,22],
             dx = 0 - x0
             dy = y - y0
             dz = 0 - z0
-            ray = Ray3D((x0, y0, z0), (dx, dy, dz),n0=n_air0)
+
+            if collimated:
+                dy = -y0 # may not be correct if ray can only cover part of aperture?
+                y0b = y0+y
+            else:
+                y0b = y0
+            ray = Ray3D((x0, y0b, z0), (dx, dy, dz),n0=n_air0)
             rays.append(ray)
-        traced_rays=system.trace(rays)
-        y_max=-1e10
-        y_min=1e10
-        for ray in traced_rays:
+        system.trace(rays)
+        y_max=-np.inf
+        y_min=np.inf
+        for ray in rays:
             if not np.isnan(ray.current_point()[2]):
                 if ray.ps[1,1]>y_max:
                     y_max = ray.ps[1,1]
                     if len(ray.ps)>22 and False:
-                        print(f'y_max ray={y_max} ',ray.ps[22])
+                        #print(f'y_max ray={y_max} ',ray.ps[22],ray.current_point())
+                        print(f'current ray={y_max} ',ray.current_point())
                 if ray.ps[1,1]<y_min:
                     y_min = ray.ps[1,1]
 
@@ -611,45 +757,72 @@ def ray_gen2d(system, ax=None, z0=-1e9,num_rays=100,y_targets=[0,4,8,12,17,22],
 
     print('y_range',y_range_list)
 
+
     demo_rays = []
     print(matched_y0s)
-
+    
+    y_obj_max = -np.inf
     for i in range(len(matched_y0s)):
+        
+
         y0 = y_range_list[i]['y0']
         x0 = 0.
         dx = 0.
         dy = y_range_list[i]['y_min']-y0
         dz = 0 - z0
-        ray1 = Ray3D((x0, y0, z0), (dx, dy, dz),n0=n_air0,color=clist[i])
+        if collimated:
+            dy = -y0
+            y0b = y0 + y_range_list[i]['y_min']
+        else:
+            y0b = y0
+
+        ray1 = Ray3D((x0, y0b, z0), (dx, dy, dz),n0=n_air0,color=clist[i])
         demo_rays.append(ray1)
 
-        y0 = y_range_list[i]['y0']
+        #y0 = y_range_list[i]['y0']
         x0 = 0.
         dx = 0.
         dy = y_range_list[i]['y_max']-y0
         dz = 0 - z0
-        ray2 = Ray3D((x0, y0, z0), (dx, dy, dz),n0=n_air0,color=clist[i])
+        if collimated:
+            dy = -y0
+            y0b = y0 + y_range_list[i]['y_max']
+        else:
+            y0b = y0
+        ray2 = Ray3D((x0, y0b, z0), (dx, dy, dz),n0=n_air0,color=clist[i])
         demo_rays.append(ray2)
         
-        y0 = y_range_list[i]['y0']
+        #y0 = y_range_list[i]['y0']
         x0 = 0.
         dx = 0.
         dy = (y_range_list[i]['y_max']+y_range_list[i]['y_min'])/2.-y0
         dz = 0 - z0
-        ray3 = Ray3D((x0, y0, z0), (dx, dy, dz),n0=n_air0,color=clist[i])
+        if collimated:
+            dy = -y0
+            y0b = y0 + (y_range_list[i]['y_min']+y_range_list[i]['y_max'])*0.5
+        else:
+            y0b = y0
+        ray3 = Ray3D((x0, y0b, z0), (dx, dy, dz),n0=n_air0,color=clist[i])
         demo_rays.append(ray3)
 
-    system.add_surface(R=np.inf, z0=z_focus, diam = 2*abs(y_targets[-1])+0.1, n_out=100)
+        if y_obj_max < abs(y0):
+            y_obj_max = abs(y0)
+
+    #system.add_surface(R=np.inf, z0=z_focus, diam = 2*abs(y_targets[-1])+0.1, n_out=100)
     print('TRACE DEMO')
     system.trace(demo_rays)
 
     for ray in demo_rays:
-        print('demo',ray.ps[-1],ray.ps[1])
+        #print('demo',ray.ps[-1],ray.ps[1])
+        #for (i, ps) in enumerate(ray.ps[:-1]):
+        #    print(i, ps,ray.nlist[i])
         path = np.array(ray.ps)
         if not np.isnan(ray.current_point()[2]) or True:
             ax.plot(path[1:, 2], path[1:, 1], color=ray.color, alpha=1,lw=lw)
 
-    return ax, z_focus
+    focal_length = y_targets[-1]*abs(z0)/y_obj_max
+
+    return ax, z_focus, focal_length
 
 
 
